@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ESP32-C3 Games Simulator</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="sim-panel" aria-label="MicriOS simulator">
+        <div class="screen-wrap">
+          <canvas id="oled" width="72" height="40" aria-label="72 by 40 OLED simulator"></canvas>
+        </div>
+        <div class="hardware-row">
+          <div class="led-block">
+            <span id="led" class="led" aria-label="GPIO8 LED"></span>
+            <span>GPIO8</span>
+          </div>
+          <button id="button" type="button" class="control-button">Button</button>
+        </div>
+      </section>
+
+      <section class="side-panel">
+        <h1>MicriOS Simulator</h1>
+        <p>Use <kbd>Space</kbd> as the single button. Tap for click, hold for long press. The blue dot mirrors GPIO8.</p>
+        <div class="toolbar">
+          <button id="reset" type="button">Reset Game</button>
+          <button id="menu" type="button">Back To Menu</button>
+          <button id="clearScores" type="button">Clear Scores</button>
+        </div>
+        <dl>
+          <dt>Menu</dt>
+          <dd>Tap: next item. Hold then release: open selected item.</dd>
+          <dt>Sections</dt>
+          <dd>Root menu contains Games, Utilities, Options, and About.</dd>
+        </dl>
+      </section>
+    </main>
+    <script src="simulator.js"></script>
+  </body>
+</html>

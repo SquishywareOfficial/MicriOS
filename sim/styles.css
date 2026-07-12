@@ -1,0 +1,154 @@
+:root {
+  color-scheme: dark;
+  --bg: #101114;
+  --panel: #1c1f26;
+  --panel-2: #252a33;
+  --text: #e7eef8;
+  --muted: #94a3b8;
+  --accent: #59a8ff;
+  --line: #394150;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: radial-gradient(circle at 20% 10%, #1c2634, var(--bg) 36rem);
+  color: var(--text);
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+
+.shell {
+  display: grid;
+  grid-template-columns: minmax(320px, 780px) minmax(260px, 360px);
+  gap: 18px;
+  align-items: start;
+  padding: 24px;
+}
+
+.sim-panel,
+.side-panel {
+  background: color-mix(in srgb, var(--panel) 94%, black);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.screen-wrap {
+  background: #050608;
+  border: 1px solid #2f3744;
+  border-radius: 6px;
+  padding: 14px;
+}
+
+#oled {
+  display: block;
+  width: min(100%, 720px);
+  aspect-ratio: 72 / 40;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  background: #000;
+  border: 1px solid #111827;
+}
+
+.hardware-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 14px;
+}
+
+.led-block {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.led {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #162234;
+  border: 1px solid #2d4c73;
+  box-shadow: inset 0 0 10px #05070a;
+}
+
+.led.on {
+  background: #5fb2ff;
+  box-shadow: 0 0 16px #5fb2ff, inset 0 0 6px white;
+}
+
+button {
+  border: 1px solid #4b5563;
+  background: var(--panel-2);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 9px 12px;
+  font: inherit;
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: var(--accent);
+}
+
+.control-button {
+  min-width: 120px;
+  font-weight: 700;
+}
+
+.control-button.pressed {
+  transform: translateY(1px);
+  background: #36506f;
+  border-color: var(--accent);
+}
+
+h1 {
+  margin: 0 0 10px;
+  font-size: 22px;
+}
+
+p,
+dd {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 16px 0;
+}
+
+dt {
+  margin-top: 14px;
+  font-weight: 700;
+}
+
+dd {
+  margin: 4px 0 0;
+}
+
+kbd {
+  display: inline-block;
+  border: 1px solid #64748b;
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  padding: 1px 6px;
+  background: #0f172a;
+  color: #e2e8f0;
+}
+
+@media (max-width: 900px) {
+  .shell {
+    grid-template-columns: 1fr;
+    padding: 12px;
+  }
+}

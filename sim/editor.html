@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ESP32-C3 Game Level Editor</title>
+    <link rel="stylesheet" href="editor.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="workspace">
+        <div class="tabs" role="tablist" aria-label="Editor mode">
+          <button id="golfTab" type="button" class="active">Tiny Golf</button>
+          <button id="mazeTab" type="button">Maze</button>
+        </div>
+        <canvas id="editorCanvas" width="72" height="40"></canvas>
+      </section>
+
+      <aside class="panel">
+        <h1>Level Editor</h1>
+        <div id="golfTools" class="tools">
+          <button data-tool="start" class="active" type="button">Ball</button>
+          <button data-tool="cup" type="button">Cup</button>
+          <button data-tool="wall" type="button">Wall</button>
+          <button data-tool="guide" type="button">Guide</button>
+          <button id="undoGolf" type="button">Undo</button>
+          <button id="clearGolf" type="button">Clear</button>
+        </div>
+        <div id="mazeTools" class="tools hidden">
+          <button data-maze-tool="wall" class="active" type="button">Toggle Wall</button>
+          <button id="clearMaze" type="button">Reset Maze</button>
+        </div>
+        <p id="hint">Drag walls/guides, click ball/cup. Coordinates match the firmware game area.</p>
+        <textarea id="output" spellcheck="false"></textarea>
+      </aside>
+    </main>
+    <script src="editor.js"></script>
+  </body>
+</html>

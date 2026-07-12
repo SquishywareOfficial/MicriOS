@@ -1,0 +1,10 @@
+.github/instructions/
+TODO.txt
+MicriOS-C3/build/
+MicriOS-C3/src/shared/
+MicriOS-T-Display/build/
+MicriOS-T-Display/src/shared/
+MicriOS-C3-Headless/build/
+MicriOS-C3-Headless/src/shared/
+dist/
+site/

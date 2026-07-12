@@ -1,0 +1,273 @@
+name: Build MicriOS
+
+on:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  compile:
+    strategy:
+      matrix:
+        include:
+          - board: MicriOS-C3
+            fqbn: esp32:esp32:esp32c3:PartitionScheme=huge_app
+            chip: esp32c3
+          - board: MicriOS-T-Display
+            fqbn: esp32:esp32:esp32:PartitionScheme=huge_app
+            chip: esp32
+          - board: MicriOS-C3-Headless
+            fqbn: esp32:esp32:esp32c3:PartitionScheme=huge_app
+            chip: esp32c3
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup arduino-cli
+        uses: arduino/setup-arduino-cli@v2
+
+      - name: Configure board manager URLs
+        run: arduino-cli config init --overwrite && arduino-cli config set board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+
+      - name: Install ESP32 core
+        run: arduino-cli core update-index && arduino-cli core install esp32:esp32
+
+      - name: Install libraries
+        run: arduino-cli lib install U8g2 "NimBLE-Arduino" "TFT_eSPI" ArduinoJson
+
+      - name: Prepare shared code
+        shell: bash
+        run: |
+          rm -rf "${{ matrix.board }}/src/shared"
+          mkdir -p "${{ matrix.board }}/src"
+          cp -R shared "${{ matrix.board }}/src/shared"
+
+      - name: Compile sketch
+        run: arduino-cli compile --export-binaries --fqbn ${{ matrix.fqbn }} ${{ matrix.board }}
+
+      - name: Package firmware
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          firmware_dir="dist/${{ matrix.board }}"
+          mkdir -p "$firmware_dir"
+
+          # Use find to locate build artifacts and copy them to dist
+          find ${{ matrix.board }}/build -name "*.bin" -exec cp {} "$firmware_dir/" \;
+
+          # Find the merged binary specifically and copy it to a stable release name.
+          # The browser installer and helper scripts use the merged image so fresh
+          # devices get bootloader, partition table, boot app, and sketch together.
+          merged_bin=$(find ${{ matrix.board }}/build -name "*.merged.bin" | head -n 1)
+          if [[ -z "$merged_bin" ]]; then
+            echo "Merged binary not found for ${{ matrix.board }}" >&2
+            exit 1
+          fi
+          cp "$merged_bin" "$firmware_dir/${{ matrix.board }}-merged.bin"
+
+          build_text="$(sed -nE 's/.*BUILD_TEXT = "([^"]+)".*/\1/p' shared/Version.h)"
+          if [[ -z "$build_text" ]]; then
+            build_text="local-build"
+          fi
+
+          # Create flashing scripts
+          if [[ "${{ matrix.chip }}" == "esp32c3" ]]; then
+            cat > "$firmware_dir/flash-windows.bat" <<EOF
+            @echo off
+            python -m pip install --upgrade esptool
+            python -m esptool --chip esp32c3 --port %1 --baud 460800 write_flash -z 0x0 ${{ matrix.board }}-merged.bin
+          EOF
+          else
+            cat > "$firmware_dir/flash-windows.bat" <<EOF
+            @echo off
+            python -m pip install --upgrade esptool
+            python -m esptool --chip esp32 --port %1 --baud 460800 write_flash -z 0x0 ${{ matrix.board }}-merged.bin
+          EOF
+          fi
+
+          echo "build_text=$build_text" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.board }}-firmware
+          path: dist/${{ matrix.board }}/**
+
+  deploy-site:
+    needs: compile
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: site/firmware
+
+      - name: Build site
+        run: |
+          mkdir -p site
+          cp -R sim site/simulator
+          cp -R web/installer/. site/
+
+          build_text="$(sed -nE 's/.*BUILD_TEXT = "([^"]+)".*/\1/p' shared/Version.h)"
+          if [[ -z "$build_text" ]]; then
+            build_text="latest"
+          fi
+          sed -i "s/__BUILD_TEXT__/${build_text}/g" site/index.html
+
+          cat > site/manifest-MicriOS-C3.json <<EOF
+          {
+            "name": "MicriOS for C3",
+            "version": "${build_text}",
+            "builds": [
+              {
+                "chipFamily": "ESP32-C3",
+                "parts": [
+                  { "path": "firmware/MicriOS-C3-firmware/MicriOS-C3-merged.bin", "offset": 0 }
+                ]
+              }
+            ]
+          }
+          EOF
+
+          cat > site/manifest-MicriOS-C3-Headless.json <<EOF
+          {
+            "name": "MicriOS for C3 Headless",
+            "version": "${build_text}",
+            "builds": [
+              {
+                "chipFamily": "ESP32-C3",
+                "parts": [
+                  { "path": "firmware/MicriOS-C3-Headless-firmware/MicriOS-C3-Headless-merged.bin", "offset": 0 }
+                ]
+              }
+            ]
+          }
+          EOF
+
+          cat > site/manifest-MicriOS-T-Display.json <<EOF
+          {
+            "name": "MicriOS for T-Display",
+            "version": "${build_text}",
+            "builds": [
+              {
+                "chipFamily": "ESP32",
+                "parts": [
+                  { "path": "firmware/MicriOS-T-Display-firmware/MicriOS-T-Display-merged.bin", "offset": 0 }
+                ]
+              }
+            ]
+          }
+          EOF
+
+          cat > site/manifest.json <<EOF
+          {
+            "name": "MicriOS",
+            "version": "${build_text}",
+            "builds": [
+              {
+                "name": "MicriOS for C3",
+                "chipFamily": "ESP32-C3",
+                "parts": [
+                  { "path": "firmware/MicriOS-C3-firmware/MicriOS-C3-merged.bin", "offset": 0 }
+                ]
+              },
+              {
+                "name": "MicriOS for C3 Headless",
+                "chipFamily": "ESP32-C3",
+                "parts": [
+                  { "path": "firmware/MicriOS-C3-Headless-firmware/MicriOS-C3-Headless-merged.bin", "offset": 0 }
+                ]
+              },
+              {
+                "name": "MicriOS for T-Display",
+                "chipFamily": "ESP32",
+                "parts": [
+                  { "path": "firmware/MicriOS-T-Display-firmware/MicriOS-T-Display-merged.bin", "offset": 0 }
+                ]
+              }
+            ]
+          }
+          EOF
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  release:
+    needs: compile
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download firmware artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Package release assets
+        id: release_info
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p release-dist
+
+          build_text="$(sed -nE 's/.*BUILD_TEXT = "([^"]+)".*/\1/p' shared/Version.h)"
+          if [[ -z "$build_text" ]]; then
+            build_text="${GITHUB_REF_NAME}"
+          fi
+
+          for artifact_dir in release-artifacts/*-firmware; do
+            artifact_name="$(basename "$artifact_dir")"
+            zip_path="$PWD/release-dist/${artifact_name}-${GITHUB_REF_NAME}.zip"
+            (cd "$artifact_dir" && python3 -m zipfile -c "$zip_path" .)
+          done
+
+          cat > release-dist/release-notes.md <<EOF
+          MicriOS ${build_text} firmware build.
+
+          Includes firmware packages for:
+          - MicriOS for C3
+          - MicriOS for T-Display
+          - MicriOS for C3 Headless
+
+          Each ZIP includes the merged firmware binary plus supporting build outputs and a Windows flash helper script.
+
+          The GitHub Pages web flasher is built separately from main and does not depend on this Release.
+          EOF
+
+          echo "build_text=$build_text" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: MicriOS ${{ steps.release_info.outputs.build_text }}
+          body_path: release-dist/release-notes.md
+          files: release-dist/*.zip
+          fail_on_unmatched_files: true
+          make_latest: true
