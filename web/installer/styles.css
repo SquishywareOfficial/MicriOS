@@ -228,7 +228,7 @@ h1 {
 
 .cards {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 18px;
 }
 
@@ -287,6 +287,13 @@ h1 {
 .headless {
   color: var(--green);
   box-shadow: inset 0 0 0 30px #151f1a;
+}
+
+.s3zero {
+  color: var(--blue);
+  box-shadow:
+    inset 0 0 0 24px #101b2b,
+    inset 0 0 42px rgba(94, 168, 255, 0.28);
 }
 
 esp-web-install-button {

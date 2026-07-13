@@ -25,6 +25,7 @@ If you already have a supported ESP32 board and just want to put MicriOS on it:
    - **MicriOS for C3** for the ESP32-C3 0.42 inch OLED board.
    - **MicriOS for T-Display** for the TENSTAR/LilyGO-style ESP32 T-Display.
    - **MicriOS for C3 Headless** for no-screen ESP32-C3 boards used as Distributed Miner slaves.
+   - **MicriOS for S3-Zero Headless** for no-screen ESP32-S3-Zero boards used as faster Distributed Miner slaves.
 4. Choose the serial port when the browser prompts for it.
 5. If flashing fails, hold **BOOT** while plugging in the board, then try again.
 
@@ -48,6 +49,16 @@ For fallback flashing commands, browser requirements, and release asset details,
 - Status LED on `GPIO8`.
 - LED/button launcher with Mouse Emulator and Distributed Miner slave apps.
 - Fresh boards start in the LED menu unless an app has been saved for autolaunch; double-tap in the LED menu clears autolaunch.
+
+### ESP32-S3-Zero Headless
+
+- ESP32-S3-Zero style board with no display.
+- BOOT button on `GPIO0`.
+- Onboard WS2812 RGB LED on `GPIO21`.
+- Defaults straight into Distributed Miner slave mode on fresh boards.
+- Uses the ESP32-S3 hardware SHA accelerator, larger nonce batches, reliable
+  assignment/result acknowledgements, and an optional core-0 software helper.
+- LED/button launcher still includes Mouse Emulator and Slave Miner apps.
 
 ### TENSTAR / LilyGO-Style T-Display ESP32
 
@@ -88,7 +99,7 @@ Device settings and save data can be managed from **Options / Save Manager**. Sa
 
 ## Building From Source
 
-Use the build script for your platform. It installs or updates the ESP32 Arduino core, installs required libraries, copies the root `shared/` source into each sketch's generated `src/shared/` folder, and compiles all three firmware targets.
+Use the build script for your platform. It installs or updates the ESP32 Arduino core, installs required libraries, copies the root `shared/` source into each sketch's generated `src/shared/` folder, and compiles all firmware targets.
 
 Windows:
 
@@ -111,6 +122,7 @@ The build scripts do not bump `Version.h`. Release/version bumps should be made 
 - `MicriOS-C3/`: ESP32-C3 OLED sketch.
 - `MicriOS-T-Display/`: T-Display sketch.
 - `MicriOS-C3-Headless/`: no-display ESP32-C3 sketch.
+- `MicriOS-S3-Zero-Headless/`: no-display ESP32-S3-Zero sketch.
 - `shared/`: source of truth for shared logic copied into each sketch before build.
 - `sim/`: browser-based C3 simulator and editors.
 - `docs/`: focused documentation for flashing and larger app workflows.
@@ -121,7 +133,7 @@ The build scripts do not bump `Version.h`. Release/version bumps should be made 
 - Web flasher: [https://squishywareofficial.github.io/MicriOS/](https://squishywareofficial.github.io/MicriOS/)
 - Simulator: [https://squishywareofficial.github.io/MicriOS/simulator/](https://squishywareofficial.github.io/MicriOS/simulator/)
 
-The flasher currently supports the C3 OLED, T-Display, and headless C3 builds.
+The flasher currently supports the C3 OLED, T-Display, headless C3, and headless S3-Zero builds.
 
 ## License
 

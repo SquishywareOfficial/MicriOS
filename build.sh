@@ -8,6 +8,7 @@ TARGETS=(
   "MicriOS-C3|esp32:esp32:esp32c3:PartitionScheme=huge_app"
   "MicriOS-T-Display|esp32:esp32:esp32:PartitionScheme=huge_app"
   "MicriOS-C3-Headless|esp32:esp32:esp32c3:PartitionScheme=huge_app"
+  "MicriOS-S3-Zero-Headless|esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,FlashMode=qio,FlashSize=4M,PartitionScheme=huge_app,PSRAM=opi,UploadSpeed=921600"
 )
 
 sync_shared_code() {

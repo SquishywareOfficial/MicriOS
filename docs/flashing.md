@@ -11,6 +11,7 @@ Use Chrome or Edge on a desktop computer. Mobile browsers usually do not expose 
 - **MicriOS for C3**: ESP32-C3 with the 0.42 inch `72x40` OLED.
 - **MicriOS for T-Display**: classic ESP32 T-Display with `240x135` color TFT.
 - **MicriOS for C3 Headless**: no-screen ESP32-C3 with LED/button launcher, Mouse Emulator, and Distributed Miner slave.
+- **MicriOS for S3-Zero Headless**: no-screen ESP32-S3-Zero with WS2812 LED/button launcher and default Distributed Miner slave autolaunch.
 
 ## Browser Flashing
 
@@ -56,6 +57,10 @@ python -m esptool --chip esp32c3 --port COM9 --baud 460800 write_flash -z 0x0 Mi
 ```
 
 ```powershell
+python -m esptool --chip esp32s3 --port COM11 --baud 460800 write_flash -z 0x0 MicriOS-S3-Zero-Headless-merged.bin
+```
+
+```powershell
 python -m esptool --chip esp32 --port COM6 --baud 460800 write_flash -z 0x0 MicriOS-T-Display-merged.bin
 ```
 
@@ -96,6 +101,10 @@ arduino-cli upload --fqbn esp32:esp32:esp32c3:PartitionScheme=huge_app --port CO
 ```
 
 ```powershell
+arduino-cli upload --fqbn esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,FlashMode=qio,FlashSize=4M,PartitionScheme=huge_app,PSRAM=opi,UploadSpeed=921600 --port COM11 MicriOS-S3-Zero-Headless
+```
+
+```powershell
 arduino-cli upload --fqbn esp32:esp32:esp32:PartitionScheme=huge_app --port COM6 MicriOS-T-Display
 ```
 
@@ -116,6 +125,10 @@ arduino-cli compile --export-binaries --fqbn esp32:esp32:esp32c3:PartitionScheme
 ```
 
 ```powershell
+arduino-cli compile --export-binaries --fqbn esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,FlashMode=qio,FlashSize=4M,PartitionScheme=huge_app,PSRAM=opi,UploadSpeed=921600 MicriOS-S3-Zero-Headless
+```
+
+```powershell
 arduino-cli compile --export-binaries --fqbn esp32:esp32:esp32:PartitionScheme=huge_app MicriOS-T-Display
 ```
 
@@ -133,6 +146,10 @@ python -m esptool --chip esp32c3 --port COM9 --baud 460800 write_flash -z 0x0 .\
 
 ```powershell
 python -m esptool --chip esp32c3 --port COM9 --baud 460800 write_flash -z 0x0 .\MicriOS-C3-Headless\build\...\MicriOS-C3-Headless.ino.merged.bin
+```
+
+```powershell
+python -m esptool --chip esp32s3 --port COM11 --baud 460800 write_flash -z 0x0 .\MicriOS-S3-Zero-Headless\build\...\MicriOS-S3-Zero-Headless.ino.merged.bin
 ```
 
 ```powershell
@@ -162,3 +179,4 @@ If multiple ports are shown, unplug the board, run the command, plug it back in,
 - Close Arduino Serial Monitor or any other program using the COM port.
 - For ESP32-C3 boards with a tiny OLED, make sure you selected **MicriOS for C3**, not the T-Display build.
 - For T-Display boards, make sure you selected **MicriOS for T-Display**, not an ESP32-C3 build.
+- For ESP32-S3-Zero boards, make sure you selected **MicriOS for S3-Zero Headless**, not the C3 headless build.

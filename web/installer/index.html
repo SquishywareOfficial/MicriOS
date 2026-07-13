@@ -103,6 +103,22 @@
             </ul>
             <esp-web-install-button manifest="manifest-MicriOS-C3-Headless.json"></esp-web-install-button>
           </article>
+
+          <article class="card card-s3zero">
+            <div class="card-visual s3zero" aria-hidden="true">
+              <span>S3</span>
+            </div>
+            <h3>MicriOS for S3-Zero Headless</h3>
+            <p>No-screen ESP32-S3-Zero firmware tuned for Distributed Miner slave clusters.</p>
+            <ul>
+              <li>Chip: ESP32-S3</li>
+              <li>Screen: none</li>
+              <li>Fresh boards start directly in Slave Miner mode.</li>
+              <li>Uses the onboard WS2812 LED as a compact status indicator.</li>
+              <li>Optimized for the dual-core S3-Zero headless mining role.</li>
+            </ul>
+            <esp-web-install-button manifest="manifest-MicriOS-S3-Zero-Headless.json"></esp-web-install-button>
+          </article>
         </div>
       </section>
 
@@ -111,8 +127,8 @@
           <h2 id="about-title">What is MicriOS?</h2>
           <p>
             MicriOS is a tiny ESP32 app launcher with board-specific interfaces and shared app logic.
-            The C3 build is designed around extreme constraints, while the T-Display build uses the larger
-            color screen for dashboards and smoother two-button controls.
+            The C3 build is designed around extreme constraints, the T-Display build uses the larger
+            color screen for dashboards, and headless builds turn spare ESP32 boards into utility or miner nodes.
           </p>
         </article>
         <article>

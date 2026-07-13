@@ -1,5 +1,23 @@
 # Release Notes
 
+## v3.0 b86
+
+- Added `MicriOS-S3-Zero-Headless` for ESP32-S3-Zero no-screen boards with BOOT on `GPIO0` and onboard WS2812 status LED on `GPIO21`.
+- Made the S3-Zero headless build default straight into Distributed Miner Slave Miner mode on fresh boards.
+- Added an ESP32-S3 register-level hardware SHA worker with a first-use
+  software cross-check and automatic software fallback; the optional core-0
+  baked-software helper remains available for measured A/B testing.
+- Tuned the distributed miner slave engine so ESP32-S3 targets advertise fast/hardware/dual-worker capability, accept larger nonce assignments, and buffer one queued assignment so the master can prefetch the next batch before the current one finishes.
+- Added effective hashrate reporting for prefetched slave work so the master can distinguish raw hashing speed from assignment/ESP-NOW overhead.
+- Tuned S3 slave cancellation checks from observed hashrate so high-speed slaves do less hot-loop polling while still responding to new jobs/cancels on a bounded cadence.
+- Moved cluster ESP-NOW receive work out of WiFi callbacks into bounded task
+  queues, added assignment/result acknowledgements and retries, suppressed
+  duplicate results, and added per-master session IDs plus job-aware cancels so
+  delayed packets cannot replace or cancel current work.
+- Added cooperative worker delays so the headless S3 miner does not starve
+  WiFi, idle/watchdog, serial, LED, or BOOT processing while hashing.
+- Added S3-Zero build, release packaging, web flasher manifest, and documentation entries.
+
 ## v3.0 b85
 
 - Renamed the active firmware/software branding from Femto OS to `MicriOS`, with flashed devices now described as `Micri Deck` / `MicriDeck`.

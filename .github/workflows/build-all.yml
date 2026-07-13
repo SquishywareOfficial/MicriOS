@@ -28,6 +28,9 @@ jobs:
           - board: MicriOS-C3-Headless
             fqbn: esp32:esp32:esp32c3:PartitionScheme=huge_app
             chip: esp32c3
+          - board: MicriOS-S3-Zero-Headless
+            fqbn: esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,FlashMode=qio,FlashSize=4M,PartitionScheme=huge_app,PSRAM=opi,UploadSpeed=921600
+            chip: esp32s3
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -87,6 +90,12 @@ jobs:
             @echo off
             python -m pip install --upgrade esptool
             python -m esptool --chip esp32c3 --port %1 --baud 460800 write_flash -z 0x0 ${{ matrix.board }}-merged.bin
+          EOF
+          elif [[ "${{ matrix.chip }}" == "esp32s3" ]]; then
+            cat > "$firmware_dir/flash-windows.bat" <<EOF
+            @echo off
+            python -m pip install --upgrade esptool
+            python -m esptool --chip esp32s3 --port %1 --baud 460800 write_flash -z 0x0 ${{ matrix.board }}-merged.bin
           EOF
           else
             cat > "$firmware_dir/flash-windows.bat" <<EOF
@@ -177,6 +186,21 @@ jobs:
           }
           EOF
 
+          cat > site/manifest-MicriOS-S3-Zero-Headless.json <<EOF
+          {
+            "name": "MicriOS for S3-Zero Headless",
+            "version": "${build_text}",
+            "builds": [
+              {
+                "chipFamily": "ESP32-S3",
+                "parts": [
+                  { "path": "firmware/MicriOS-S3-Zero-Headless-firmware/MicriOS-S3-Zero-Headless-merged.bin", "offset": 0 }
+                ]
+              }
+            ]
+          }
+          EOF
+
           cat > site/manifest.json <<EOF
           {
             "name": "MicriOS",
@@ -201,6 +225,13 @@ jobs:
                 "chipFamily": "ESP32",
                 "parts": [
                   { "path": "firmware/MicriOS-T-Display-firmware/MicriOS-T-Display-merged.bin", "offset": 0 }
+                ]
+              },
+              {
+                "name": "MicriOS for S3-Zero Headless",
+                "chipFamily": "ESP32-S3",
+                "parts": [
+                  { "path": "firmware/MicriOS-S3-Zero-Headless-firmware/MicriOS-S3-Zero-Headless-merged.bin", "offset": 0 }
                 ]
               }
             ]
@@ -255,6 +286,7 @@ jobs:
           - MicriOS for C3
           - MicriOS for T-Display
           - MicriOS for C3 Headless
+          - MicriOS for S3-Zero Headless
 
           Each ZIP includes the merged firmware binary plus supporting build outputs and a Windows flash helper script.
 
