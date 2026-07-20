@@ -48,7 +48,7 @@ constexpr uint8_t SAVE_COUNT = sizeof(SAVE_ENTRIES) / sizeof(SAVE_ENTRIES[0]);
 constexpr uint8_t SAVE_ALL_INDEX = SAVE_COUNT;
 constexpr uint8_t SAVE_BACK_INDEX = SAVE_COUNT + 1;
 constexpr uint8_t SAVE_MENU_COUNT = SAVE_COUNT + 2;
-const char* MAIN_ITEMS[] = {"Player Initials", "Text Size", "Save Manager", "Exit"};
+const char* MAIN_ITEMS[] = {"User Initials", "Text Size", "Save Manager", "Exit"};
 constexpr uint8_t MAIN_COUNT = sizeof(MAIN_ITEMS) / sizeof(MAIN_ITEMS[0]);
 constexpr uint8_t VISIBLE_SAVE_ROWS = 4;
 
@@ -320,7 +320,7 @@ void OptionsApp::updateRunning(uint32_t deltaMs, const ButtonInput& b1, const Bu
       markDirty();
     } else {
       PlayerProfile::saveInitials(initials_[0], initials_[1]);
-      message_ = "Player saved";
+      message_ = "User saved";
       messageToMain_ = true;
       mode_ = Mode::Message;
       markDirty();
@@ -339,7 +339,7 @@ void OptionsApp::drawStart(TFT_eSPI& tft) {
     drawShell(canvas, width, height, "Options");
     canvas.setTextSize(2);
     canvas.setTextColor(TFT_WHITE, TFT_BLACK);
-    canvas.drawString("Player", 20, 50);
+    canvas.drawString("User Initials", 20, 50);
     canvas.drawString(dotted, 112, 50);
     canvas.setTextSize(1);
     canvas.drawString("Initials and save manager", 20, 80);
@@ -466,7 +466,7 @@ void OptionsApp::drawRunning(TFT_eSPI& tft) {
   }
 
   drawBuffered(tft, width, height, [&](auto& canvas) {
-    drawShell(canvas, width, height, "Initials");
+    drawShell(canvas, width, height, "User Initials");
     canvas.setTextSize(4);
     canvas.setTextColor(TFT_WHITE, TFT_BLACK);
     canvas.setCursor(70, 52);

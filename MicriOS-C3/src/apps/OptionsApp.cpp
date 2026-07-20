@@ -45,7 +45,7 @@ constexpr uint8_t SAVE_COUNT = sizeof(SAVE_ENTRIES) / sizeof(SAVE_ENTRIES[0]);
 constexpr uint8_t SAVE_ALL_INDEX = SAVE_COUNT;
 constexpr uint8_t SAVE_BACK_INDEX = SAVE_COUNT + 1;
 constexpr uint8_t SAVE_MENU_COUNT = SAVE_COUNT + 2;
-const char* MAIN_ITEMS[] = {"Player", "Saves", "Exit"};
+const char* MAIN_ITEMS[] = {"User Initials", "Saves", "Exit"};
 constexpr uint8_t MAIN_COUNT = sizeof(MAIN_ITEMS) / sizeof(MAIN_ITEMS[0]);
 }
 
@@ -153,7 +153,7 @@ void OptionsApp::updateRunning(uint32_t deltaMs, const ButtonInput& input) {
       selected_ = 1;
     } else {
       PlayerProfile::saveInitials(initials_[0], initials_[1]);
-      message_ = "Player saved";
+      message_ = "User saved";
       messageToMain_ = true;
       mode_ = Mode::Message;
     }
@@ -168,7 +168,7 @@ void OptionsApp::drawStart(U8G2& u8g2) {
   u8g2.setFont(u8g2_font_5x8_tr);
   u8g2.drawStr(3, 9, "Options");
   u8g2.setFont(u8g2_font_4x6_tr);
-  u8g2.drawStr(3, 21, "Player");
+  u8g2.drawStr(3, 21, "User Initials");
   u8g2.drawStr(36, 21, dotted);
   u8g2.drawStr(3, 31, "Save manager");
   u8g2.drawStr(3, 38, "Press to open");
@@ -237,7 +237,7 @@ void OptionsApp::drawRunning(U8G2& u8g2) {
   }
 
   u8g2.setFont(u8g2_font_5x8_tr);
-  u8g2.drawStr(3, 9, "Initials");
+  u8g2.drawStr(3, 9, "User Initials");
   u8g2.setCursor(26, 24);
   u8g2.print(initials_[0]);
   u8g2.print(".");

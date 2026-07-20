@@ -10,6 +10,7 @@ Quick links:
 - [Release notes](RELEASE_NOTES.md)
 - [Documentation index](docs/README.md)
 - [Flashing guide](docs/flashing.md)
+- [ESP32-CYD touch build](docs/cyd.md)
 - [Game guides](docs/games.md)
 - [Mouse Emulator (Mouse Jiggler) guide](docs/mouse-emulator.md)
 - [Micri Miner guide](docs/micri-miner.md)
@@ -24,6 +25,7 @@ If you already have a supported ESP32 board and just want to put MicriOS on it:
 3. Click **Install** on the card that matches your board:
    - **MicriOS for C3** for the ESP32-C3 0.42 inch OLED board.
    - **MicriOS for T-Display** for the TENSTAR/LilyGO-style ESP32 T-Display.
+   - **MicriOS for CYD** for the ESP32-2432S028 Cheap Yellow Display.
    - **MicriOS for C3 Headless** for no-screen ESP32-C3 boards used as Distributed Miner slaves.
    - **MicriOS for S3-Zero Headless** for no-screen ESP32-S3-Zero boards used as faster Distributed Miner slaves.
 4. Choose the serial port when the browser prompts for it.
@@ -66,6 +68,13 @@ For fallback flashing commands, browser requirements, and release asset details,
 - Buttons on `GPIO0` and `GPIO35`.
 - Backlight on `GPIO4`.
 
+### ESP32-2432S028 Cheap Yellow Display
+
+- Classic dual-core ESP32 with a `320x240` ILI9341 color TFT.
+- XPT2046 resistive touch controller with first-boot calibration.
+- Touch-native card launcher plus context-aware Back/Exit system controls.
+- Supported electrical profile and controls are documented in the [CYD guide](docs/cyd.md).
+
 ## Controls
 
 ### MicriOS for C3
@@ -81,6 +90,14 @@ For fallback flashing commands, browser requirements, and release asset details,
 - Button 1 hold: launch / secondary action.
 - Button 2 tap: previous / back.
 - Button 2 hold: global exit to menu.
+
+### MicriOS for CYD
+
+- Menus: tap a card to open it; swipe or use the page arrows for more cards.
+- One-input games: tap anywhere in the game canvas.
+- Directional/two-input games: touch the left or right half of the canvas.
+- Tap **Exit** in the bottom system bar to leave an app or game; submenu
+  navigation uses **Back**.
 
 ## Included Features
 
@@ -121,6 +138,7 @@ The build scripts do not bump `Version.h`. Release/version bumps should be made 
 
 - `MicriOS-C3/`: ESP32-C3 OLED sketch.
 - `MicriOS-T-Display/`: T-Display sketch.
+- `MicriOS-CYD/`: ESP32-2432S028 touch-screen sketch.
 - `MicriOS-C3-Headless/`: no-display ESP32-C3 sketch.
 - `MicriOS-S3-Zero-Headless/`: no-display ESP32-S3-Zero sketch.
 - `shared/`: source of truth for shared logic copied into each sketch before build.
@@ -133,7 +151,7 @@ The build scripts do not bump `Version.h`. Release/version bumps should be made 
 - Web flasher: [https://squishywareofficial.github.io/MicriOS/](https://squishywareofficial.github.io/MicriOS/)
 - Simulator: [https://squishywareofficial.github.io/MicriOS/simulator/](https://squishywareofficial.github.io/MicriOS/simulator/)
 
-The flasher currently supports the C3 OLED, T-Display, headless C3, and headless S3-Zero builds.
+The flasher currently supports the C3 OLED, T-Display, CYD, headless C3, and headless S3-Zero builds.
 
 ## License
 

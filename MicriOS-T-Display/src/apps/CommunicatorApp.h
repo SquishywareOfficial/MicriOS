@@ -46,7 +46,7 @@ class CommunicatorApp : public App {
     const CommunicatorLogic::DictNode* currentList(uint8_t& count) const;
     const CommunicatorLogic::DictNode* selectedNode() const;
     const CommunicatorLogic::DictNode* nodeAtPath(const uint8_t* path, uint8_t length) const;
-    const char* packetLeafLabel(const CommunicatorLogic::MessagePacket& packet) const;
+    String packetMessageText(const CommunicatorLogic::MessagePacket& packet) const;
     const char* currentTitle() const;
     const char* recipientLabel(uint8_t index) const;
     void showFeedback(const char* text, uint16_t color);
@@ -83,5 +83,5 @@ class CommunicatorApp : public App {
     const char* feedbackText_ = "";
     uint16_t feedbackColor_ = 0;
     uint16_t feedbackMs_ = 0;
-    char myInitials_[3] = {'J', 'F', '\0'};
+    char myInitials_[3] = {'A', 'A', '\0'};
 };

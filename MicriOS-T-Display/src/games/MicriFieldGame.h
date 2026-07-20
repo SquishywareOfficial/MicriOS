@@ -24,7 +24,7 @@ class MicriFieldGame : public App {
       AngleSelect,
       JavelinHoldAngle,
       HighJumpHold,
-      ThrowAnim,
+      ResultAnim,
       Result
     };
 
@@ -71,9 +71,12 @@ class MicriFieldGame : public App {
     template <typename Canvas> void drawAngleSelect(Canvas& tft);
     template <typename Canvas> void drawJavelinHoldAngle(Canvas& tft);
     template <typename Canvas> void drawHighJumpHold(Canvas& tft);
-    template <typename Canvas> void drawThrowAnim(Canvas& tft);
+    template <typename Canvas> void drawResultAnim(Canvas& tft);
     template <typename Canvas> void drawResult(Canvas& tft);
-    template <typename Canvas> void drawStick(Canvas& tft, int x, int groundY, bool airborne);
+    template <typename Canvas> void drawStick(Canvas& tft, int x, int groundY,
+                                               bool airborne,
+                                               uint16_t color = 0xFFFF,
+                                               uint8_t gait = 0);
     template <typename Canvas> void drawHurdle(Canvas& tft, int x, int groundY, bool fallen = false);
     template <typename Canvas> void drawAngleFan(Canvas& tft, int ox, int oy, float angleDeg);
     template <typename Canvas> void drawTrackSplash(Canvas& tft);
@@ -105,6 +108,7 @@ class MicriFieldGame : public App {
     uint16_t hurdleScrollMs_ = 0;
     uint16_t hurdleHoldMs_ = 0;
     uint8_t hurdleTimingQuality_ = 0;
+    uint16_t hurdleJumpAgeMs_ = 0;
     float hurdleRunnerY_ = 0.0f;
     float hurdleVy_ = 0.0f;
     float hurdleX_ = 0.0f;
@@ -116,7 +120,7 @@ class MicriFieldGame : public App {
     float selectorAngle_ = 20.0f;
     int8_t selectorDir_ = 1;
     float directionDeg_ = 0.0f;
-    uint16_t throwAnimMs_ = 0;
+    uint16_t resultAnimMs_ = 0;
     int16_t throwSignedDistanceCm_ = 0;
     uint16_t highHoldMs_ = 0;
     uint8_t highAngleQuality_ = 0;

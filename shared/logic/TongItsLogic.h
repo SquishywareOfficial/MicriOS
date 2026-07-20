@@ -87,18 +87,18 @@ class Logic {
       selectedMeld_ = 0;
       selectedSource_ = DrawSource::Stock;
       view_ = View::Hand;
-      phase_ = Phase::Draw;
+      phase_ = Phase::Action;
       endReason_ = EndReason::None;
       winner_ = HUMAN;
       lastStockTaker_ = HUMAN;
-      setMessage("Draw a card");
+      setMessage("Discard a card");
 
       for (uint8_t round = 0; round < 12; round++) {
         for (uint8_t player = 0; player < PLAYER_COUNT; player++) {
           addCard(player, drawStock());
         }
       }
-      discard_[discardCount_++] = drawStock();
+      addCard(HUMAN, drawStock());
       for (uint8_t player = 0; player < PLAYER_COUNT; player++) {
         sortHand(player);
       }
@@ -117,6 +117,26 @@ class Logic {
     uint8_t handCount(uint8_t player) const { return handCount_[player % PLAYER_COUNT]; }
     uint8_t handCard(uint8_t player, uint8_t index) const { return hands_[player % PLAYER_COUNT][index % MAX_HAND]; }
     uint8_t selectedHand() const { return selectedHand_; }
+    void setView(View view) {
+      view_ = view;
+      clampTableSelection();
+    }
+    void setSelectedHand(uint8_t index) {
+      selectedHand_ = handCount_[HUMAN] == 0
+                          ? 0
+                          : static_cast<uint8_t>(index % handCount_[HUMAN]);
+    }
+    void setSelectedSource(DrawSource source) { selectedSource_ = source; }
+    void setSelectedMeld(uint8_t index) {
+      refreshSuggestions();
+      selectedMeld_ = suggestionCount_ == 0
+                          ? 0
+                          : static_cast<uint8_t>(index % suggestionCount_);
+    }
+    void setSelectedTableOption(uint8_t index) {
+      const uint8_t count = tableOptionCount();
+      selectedTable_ = count == 0 ? 0 : static_cast<uint8_t>(index % count);
+    }
     uint8_t exposedMeldCount(uint8_t player) const { return exposedCount_[player % PLAYER_COUNT]; }
     uint8_t exposedCardCount(uint8_t player, uint8_t meld) const {
       return exposed_[player % PLAYER_COUNT][meld % MAX_MELDS].count;

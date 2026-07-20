@@ -21,6 +21,15 @@ inline Money betAt(uint8_t index) {
   }
 }
 
+inline Money slotBetAt(uint8_t index) {
+  switch (index % BET_COUNT) {
+    case 0: return 1;
+    case 1: return 2;
+    case 2: return 5;
+    default: return 10;
+  }
+}
+
 enum class GameId : uint8_t {
   Blackjack,
   Roulette,
@@ -98,6 +107,18 @@ inline const char* outcomeName(Outcome outcome) {
     case Outcome::Push: return "PUSH";
     case Outcome::Bust: return "BUST";
     case Outcome::Blackjack: return "BLACKJACK";
+    case Outcome::None:
+    default: return "";
+  }
+}
+
+inline const char* blackjackResultName(Outcome outcome) {
+  switch (outcome) {
+    case Outcome::Win:
+    case Outcome::Blackjack: return "WIN";
+    case Outcome::Lose:
+    case Outcome::Bust: return "LOSE";
+    case Outcome::Push: return "DRAW";
     case Outcome::None:
     default: return "";
   }
@@ -384,25 +405,45 @@ class Logic {
     static constexpr uint16_t BLACKJACK_DEAL_DELAY_MS = 300;
     static constexpr uint16_t BLACKJACK_DEALER_DELAY_MS = 500;
     static constexpr uint16_t BLACKJACK_SHUFFLE_DELAY_MS = 1000;
+    static constexpr uint8_t HOLDEM_SEATS = 4;
 
     void seed(uint32_t seedValue) {
       rng_ = seedValue == 0 ? 0xA53C9E11UL : seedValue;
     }
 
-    void loadBankroll(Money bankroll, Money best, uint16_t initials) {
+    void loadBankroll(Money bankroll, Money bestCashout, uint16_t initials) {
       bankroll_ = bankroll <= 0 ? START_BANKROLL : bankroll;
-      bestBankroll_ = best < START_BANKROLL ? START_BANKROLL : best;
+      bestCashout_ = bestCashout;
       if (bankroll_ > MAX_BANKROLL) bankroll_ = MAX_BANKROLL;
-      if (bestBankroll_ > MAX_BANKROLL) bestBankroll_ = MAX_BANKROLL;
-      bestInitials_ = initials;
+      if (bestCashout_ > MAX_BANKROLL) bestCashout_ = MAX_BANKROLL;
+      bestCashoutInitials_ = initials;
+      gameStartBankroll_ = bankroll_;
       clampBet();
     }
 
     Money bankroll() const { return bankroll_; }
-    Money bestBankroll() const { return bestBankroll_; }
-    uint16_t bestInitials() const { return bestInitials_; }
+    Money bestCashout() const { return bestCashout_; }
+    uint16_t bestCashoutInitials() const { return bestCashoutInitials_; }
+    Money lastCashout() const { return lastCashout_; }
+    int32_t gameProfitLoss() const {
+      return static_cast<int32_t>(bankroll_) - static_cast<int32_t>(gameStartBankroll_);
+    }
     Money bet() const { return betAt(betIndex_); }
+    Money slotBet() const { return slotBetAt(betIndex_); }
     uint8_t betIndex() const { return betIndex_; }
+    bool setBetIndex(uint8_t index) {
+      index = static_cast<uint8_t>(index % BET_COUNT);
+      const Money wager = screen_ == Screen::SlotsIdle
+                              ? slotBetAt(index)
+                              : betAt(index);
+      const Money budget = screen_ == Screen::RouletteStake
+                               ? rouletteStakeBudget()
+                               : bankroll_;
+      if (wager > budget) return false;
+      betIndex_ = index;
+      dirty_ = true;
+      return true;
+    }
     Screen screen() const { return screen_; }
     uint8_t hubIndex() const { return hubIndex_; }
     bool dirty() const { return dirty_; }
@@ -455,19 +496,22 @@ class Logic {
           holdemAction_ = static_cast<HoldemAction>((static_cast<uint8_t>(holdemAction_) + 1) % 3);
           break;
         case Screen::VideoHold:
-          videoCursor_ = static_cast<uint8_t>((videoCursor_ + 1) % 6);
+          if (!videoAnimating_) {
+            videoCursor_ = static_cast<uint8_t>((videoCursor_ + 1) % 6);
+          }
           break;
         case Screen::RouletteResult:
+          memset(rouletteBets_, 0, sizeof(rouletteBets_));
           screen_ = Screen::RouletteBet;
           break;
         case Screen::SlotsResult:
           screen_ = Screen::SlotsIdle;
           break;
         case Screen::HoldemResult:
-          startHoldem();
+          beginHoldemHand(currentInitials_);
           break;
         case Screen::VideoResult:
-          startVideoPoker();
+          dealVideoPoker(currentInitials_);
           break;
         case Screen::Broke:
           resetBankroll();
@@ -498,14 +542,14 @@ class Logic {
           }
           if (hubIndex_ < 5) {
             activeGame_ = static_cast<GameId>(hubIndex_);
+            gameStartBankroll_ = bankroll_;
             if (activeGame_ == GameId::Blackjack) startBlackjack();
-            else if (activeGame_ == GameId::Roulette) screen_ = Screen::RouletteBet;
+            else if (activeGame_ == GameId::Roulette) startRoulette();
             else if (activeGame_ == GameId::Slots) screen_ = Screen::SlotsIdle;
             else if (activeGame_ == GameId::Holdem) startHoldem();
             else startVideoPoker();
           } else if (hubIndex_ == 5) {
-            noteBest(playerInitials);
-            screen_ = Screen::CashOut;
+            cashOut(currentInitials_);
           } else {
             resetBankroll();
           }
@@ -523,7 +567,7 @@ class Logic {
           screen_ = Screen::RouletteStake;
           break;
         case Screen::RouletteStake:
-          startRouletteSpin(playerInitials);
+          commitRouletteBet(true, playerInitials);
           break;
         case Screen::SlotsIdle:
           startSlotsSpin(modernSlots);
@@ -538,6 +582,9 @@ class Logic {
           dealVideoPoker(playerInitials);
           break;
         case Screen::VideoHold:
+          if (videoAnimating_) {
+            break;
+          }
           if (videoCursor_ < 5) {
             videoHeld_[videoCursor_] = !videoHeld_[videoCursor_];
           } else {
@@ -552,6 +599,9 @@ class Logic {
           break;
         case Screen::CashOut:
           resetToHub();
+          break;
+        case Screen::VideoResult:
+          startVideoPoker();
           break;
         default:
           resetToHub();
@@ -579,19 +629,29 @@ class Logic {
         updateRouletteSpin(deltaMs);
       } else if (screen_ == Screen::SlotsSpinning) {
         updateSlotsSpin(deltaMs);
+      } else if (screen_ == Screen::VideoHold && videoAnimating_) {
+        updateVideoAnimation(deltaMs, playerInitials);
+      } else if (screen_ == Screen::HoldemAction) {
+        updateHoldem(deltaMs, playerInitials);
       }
     }
 
-    void noteBest(uint16_t playerInitials) {
-      if (bankroll_ > bestBankroll_) {
-        bestBankroll_ = bankroll_;
-        bestInitials_ = playerInitials;
+    void cashOut(uint16_t playerInitials) {
+      lastCashout_ = bankroll_;
+      if (lastCashout_ > bestCashout_) {
+        bestCashout_ = lastCashout_;
+        bestCashoutInitials_ = playerInitials;
       }
+      bankroll_ = START_BANKROLL;
+      betIndex_ = 0;
+      screen_ = Screen::CashOut;
+      dirty_ = true;
     }
 
     void resetBankroll() {
       bankroll_ = START_BANKROLL;
       betIndex_ = 0;
+      gameStartBankroll_ = bankroll_;
       screen_ = Screen::Hub;
       dirty_ = true;
     }
@@ -632,6 +692,30 @@ class Logic {
     Money lastWin() const { return lastWin_; }
 
     RouletteBet rouletteBet() const { return rouletteBet_; }
+    Money rouletteWager(RouletteBet bet) const {
+      return rouletteBets_[static_cast<uint8_t>(bet) % 7];
+    }
+    Money rouletteTotalWager() const {
+      Money total = 0;
+      for (uint8_t i = 0; i < 7; ++i) total += rouletteBets_[i];
+      return total;
+    }
+    Money rouletteStakeBudget() const {
+      const Money selected = rouletteWager(rouletteBet_);
+      const Money committedElsewhere = rouletteTotalWager() - selected;
+      return bankroll_ > committedElsewhere ? bankroll_ - committedElsewhere : 0;
+    }
+    bool commitRouletteBet(bool spin, uint16_t playerInitials) {
+      if (bet() > rouletteStakeBudget()) return false;
+      rouletteBets_[static_cast<uint8_t>(rouletteBet_)] = bet();
+      if (spin) {
+        startRouletteSpin(playerInitials);
+      } else {
+        screen_ = Screen::RouletteBet;
+        dirty_ = true;
+      }
+      return true;
+    }
     uint8_t rouletteNumber() const { return rouletteNumber_; }
     uint16_t rouletteSpinMs() const { return rouletteSpinMs_; }
     uint8_t rouletteDisplayNumber() const {
@@ -665,25 +749,75 @@ class Logic {
       return (slotWinMask_ & (1U << bit)) != 0;
     }
 
-    const uint8_t* holdemPlayer() const { return holdemPlayer_; }
-    const uint8_t* holdemDealer() const { return holdemDealer_; }
+    const uint8_t* holdemPlayer() const { return holdemCards_[0]; }
+    const uint8_t* holdemDealer() const { return holdemCards_[1]; }
+    const uint8_t* holdemSeatCards(uint8_t seat) const { return holdemCards_[seat % HOLDEM_SEATS]; }
     const uint8_t* holdemCommunity() const { return holdemCommunity_; }
     uint8_t communityShown() const { return holdemCommunityShown_; }
     HoldemAction holdemAction() const { return holdemAction_; }
+    void setHoldemAction(HoldemAction action) {
+      holdemAction_ = action;
+      dirty_ = true;
+    }
     Money pot() const { return holdemPot_; }
     uint32_t playerPokerScore() const { return playerPokerScore_; }
     uint32_t dealerPokerScore() const { return dealerPokerScore_; }
-    uint32_t holdemWinningScore() const {
-      if (outcome_ == Outcome::Lose) return dealerPokerScore_;
-      if (outcome_ == Outcome::Win) return playerPokerScore_;
-      return playerPokerScore_ > dealerPokerScore_ ? playerPokerScore_ : dealerPokerScore_;
+    uint32_t holdemWinningScore() const { return holdemWinningScore_; }
+    uint32_t holdemSeatScore(uint8_t seat) const { return holdemSeatScores_[seat % HOLDEM_SEATS]; }
+    bool holdemSeatFolded(uint8_t seat) const { return holdemFolded_[seat % HOLDEM_SEATS]; }
+    bool holdemSeatAllIn(uint8_t seat) const { return holdemAllIn_[seat % HOLDEM_SEATS]; }
+    uint8_t holdemActor() const { return holdemActor_; }
+    uint8_t holdemWinnerSeat() const { return holdemWinnerSeat_; }
+    uint8_t holdemWinnerCount() const { return holdemWinnerCount_; }
+    bool holdemPlayerFolded() const { return holdemFolded_[0]; }
+    Money holdemBigBlind() const { return holdemBigBlind_; }
+    Money holdemMaxBet() const { return holdemMaxBet_; }
+    Money holdemCallAmount() const {
+      return holdemCurrentBet_ > holdemStreetBet_[0]
+                 ? holdemCurrentBet_ - holdemStreetBet_[0]
+                 : 0;
+    }
+    Money holdemRaiseAmount() const { return holdemRaiseAmount_; }
+    bool holdemCanRaise() const {
+      return holdemCurrentBet_ < holdemMaxBet_ && bankroll_ > holdemCallAmount();
+    }
+    void setHoldemRaiseAmount(Money amount) {
+      const Money minimum = holdemBigBlind_ == 0 ? bet() : holdemBigBlind_;
+      const Money room = holdemCurrentBet_ < holdemMaxBet_
+                             ? holdemMaxBet_ - holdemCurrentBet_
+                             : 0;
+      if (amount < minimum) amount = minimum;
+      if (amount > room) amount = room;
+      holdemRaiseAmount_ = amount;
+      dirty_ = true;
+    }
+    const char* holdemMessage() const { return holdemMessage_; }
+    const char* holdemSeatName(uint8_t seat) const {
+      static const char* const names[HOLDEM_SEATS] = {"You", "Blaze", "Sage", "Ace"};
+      return names[seat % HOLDEM_SEATS];
+    }
+    const char* holdemPrimaryActionName() const {
+      return holdemCallAmount() == 0 ? "Check" : "Call";
     }
 
     const uint8_t* videoCards() const { return videoCards_; }
+    uint8_t videoDisplayCard(uint8_t index) const {
+      index %= 5;
+      if (!videoAnimating_ || (videoDrawPhase_ && videoHeld_[index])) {
+        return videoCards_[index];
+      }
+      const uint16_t settleAt = static_cast<uint16_t>(300 + index * 90);
+      if (videoAnimationMs_ >= settleAt) {
+        return videoCards_[index];
+      }
+      return static_cast<uint8_t>((videoCards_[index] + videoAnimationMs_ / 45 + index * 7) % 52);
+    }
     bool videoHeld(uint8_t index) const { return videoHeld_[index % 5]; }
     uint8_t videoCursor() const { return videoCursor_; }
     uint16_t videoMultiplier() const { return videoMultiplier_; }
     uint32_t videoScore() const { return videoScore_; }
+    bool videoAnimating() const { return videoAnimating_; }
+    bool videoDrawing() const { return videoAnimating_ && videoDrawPhase_; }
 
   private:
     uint32_t rand32() {
@@ -745,11 +879,15 @@ class Logic {
     }
 
     bool takeBet() {
-      if (bankroll_ < bet()) {
+      return takeWager(bet());
+    }
+
+    bool takeWager(Money wager) {
+      if (bankroll_ < wager) {
         screen_ = Screen::Broke;
         return false;
       }
-      bankroll_ -= bet();
+      bankroll_ -= wager;
       lastWin_ = 0;
       return true;
     }
@@ -769,13 +907,13 @@ class Logic {
     }
 
     void pay(Money amount, uint16_t playerInitials) {
+      (void)playerInitials;
       if (amount > 0) {
         addMoney(amount);
         lastWin_ = amount;
       } else {
         lastWin_ = 0;
       }
-      noteBest(playerInitials);
       clampBet();
     }
 
@@ -851,7 +989,6 @@ class Logic {
             outcome_ = Outcome::Lose;
             loseBet();
           }
-          noteBest(currentInitials_);
           clampBet();
           screen_ = Screen::BlackjackResult;
         } else {
@@ -958,7 +1095,6 @@ class Logic {
         outcome_ = Outcome::Lose;
         loseBet();
       }
-      noteBest(playerInitials);
       clampBet();
       screen_ = Screen::BlackjackResult;
       dirty_ = true;
@@ -978,8 +1114,34 @@ class Logic {
       }
     }
 
+    void startRoulette() {
+      activeGame_ = GameId::Roulette;
+      memset(rouletteBets_, 0, sizeof(rouletteBets_));
+      rouletteBet_ = RouletteBet::Red;
+      rouletteWon_ = false;
+      outcome_ = Outcome::None;
+      lastWin_ = 0;
+      screen_ = Screen::RouletteBet;
+      dirty_ = true;
+    }
+
+    bool rouletteBetWins(RouletteBet bet, uint8_t number) const {
+      if (number == 0) return bet == RouletteBet::Zero;
+      switch (bet) {
+        case RouletteBet::Red: return isRed(number);
+        case RouletteBet::Black: return !isRed(number);
+        case RouletteBet::Odd: return (number % 2) == 1;
+        case RouletteBet::Even: return (number % 2) == 0;
+        case RouletteBet::Low: return number <= 18;
+        case RouletteBet::High: return number >= 19;
+        case RouletteBet::Zero: return false;
+      }
+      return false;
+    }
+
     void startRouletteSpin(uint16_t playerInitials) {
-      if (!takeBet()) return;
+      const Money totalWager = rouletteTotalWager();
+      if (totalWager == 0 || !takeWager(totalWager)) return;
       currentInitials_ = playerInitials;
       rouletteNumber_ = static_cast<uint8_t>(rand32() % 37);
       rouletteSpinMs_ = 0;
@@ -994,22 +1156,21 @@ class Logic {
         dirty_ = true;
         return;
       }
-      rouletteWon_ = false;
-      if (rouletteNumber_ == 0) {
-        rouletteWon_ = rouletteBet_ == RouletteBet::Zero;
-      } else {
-        switch (rouletteBet_) {
-          case RouletteBet::Red: rouletteWon_ = isRed(rouletteNumber_); break;
-          case RouletteBet::Black: rouletteWon_ = !isRed(rouletteNumber_); break;
-          case RouletteBet::Odd: rouletteWon_ = (rouletteNumber_ % 2) == 1; break;
-          case RouletteBet::Even: rouletteWon_ = (rouletteNumber_ % 2) == 0; break;
-          case RouletteBet::Low: rouletteWon_ = rouletteNumber_ <= 18; break;
-          case RouletteBet::High: rouletteWon_ = rouletteNumber_ >= 19; break;
-          case RouletteBet::Zero: rouletteWon_ = false; break;
+      const Money totalWager = rouletteTotalWager();
+      Money payout = 0;
+      for (uint8_t i = 0; i < 7; ++i) {
+        const Money wager = rouletteBets_[i];
+        if (wager == 0) continue;
+        const RouletteBet placed = static_cast<RouletteBet>(i);
+        if (rouletteBetWins(placed, rouletteNumber_)) {
+          payout += wager * (placed == RouletteBet::Zero ? 36UL : 2UL);
         }
       }
-      outcome_ = rouletteWon_ ? Outcome::Win : Outcome::Lose;
-      pay(rouletteWon_ ? bet() * (rouletteBet_ == RouletteBet::Zero ? 36 : 2) : 0, currentInitials_);
+      rouletteWon_ = payout > totalWager;
+      outcome_ = payout > totalWager
+                     ? Outcome::Win
+                     : (payout == totalWager ? Outcome::Push : Outcome::Lose);
+      pay(payout, currentInitials_);
       screen_ = Screen::RouletteResult;
       dirty_ = true;
     }
@@ -1035,7 +1196,7 @@ class Logic {
       slotWinMask_ = 0;
       if (freeSpins_ > 0) {
         freeSpins_--;
-      } else if (!takeBet()) {
+      } else if (!takeWager(slotBet())) {
         return;
       }
       slotScatters_ = 0;
@@ -1155,7 +1316,7 @@ class Logic {
         }
       }
       outcome_ = multiplier > 0 ? Outcome::Win : Outcome::Lose;
-      pay(bet() * multiplier, currentInitials_);
+      pay(slotBet() * multiplier, currentInitials_);
       screen_ = Screen::SlotsResult;
       dirty_ = true;
     }
@@ -1164,80 +1325,297 @@ class Logic {
       activeGame_ = GameId::Holdem;
       screen_ = Screen::HoldemBet;
       outcome_ = Outcome::None;
+      holdemTableConfigured_ = false;
       clampBet();
       dirty_ = true;
     }
 
     void dealHoldemHand(uint16_t playerInitials) {
+      if (playerInitials != 0) currentInitials_ = playerInitials;
+      holdemBigBlind_ = bet();
+      holdemMaxBet_ = holdemBigBlind_ * 10;
+      holdemRaiseAmount_ = holdemBigBlind_;
+      holdemTableConfigured_ = true;
+      beginHoldemHand(playerInitials);
+    }
+
+    void beginHoldemHand(uint16_t playerInitials) {
       activeGame_ = GameId::Holdem;
-      if (playerInitials != 0) {
-        currentInitials_ = playerInitials;
+      if (playerInitials != 0) currentInitials_ = playerInitials;
+      if (!holdemTableConfigured_) {
+        startHoldem();
+        return;
       }
-      if (!takeBet()) return;
+      if (bankroll_ < holdemBigBlind_) {
+        holdemTableConfigured_ = false;
+        screen_ = Screen::HoldemBet;
+        clampBet();
+        holdemMessage_ = "Choose a lower blind";
+        dirty_ = true;
+        return;
+      }
+
       buildDeck();
-      holdemPlayer_[0] = drawCard();
-      holdemDealer_[0] = drawCard();
-      holdemPlayer_[1] = drawCard();
-      holdemDealer_[1] = drawCard();
-      for (uint8_t i = 0; i < 5; i++) {
-        holdemCommunity_[i] = drawCard();
+      memset(holdemFolded_, 0, sizeof(holdemFolded_));
+      memset(holdemAllIn_, 0, sizeof(holdemAllIn_));
+      memset(holdemActed_, 0, sizeof(holdemActed_));
+      memset(holdemStreetBet_, 0, sizeof(holdemStreetBet_));
+      memset(holdemTotalBet_, 0, sizeof(holdemTotalBet_));
+      memset(holdemSeatScores_, 0, sizeof(holdemSeatScores_));
+      for (uint8_t card = 0; card < 2; ++card) {
+        for (uint8_t seat = 0; seat < HOLDEM_SEATS; ++seat) {
+          holdemCards_[seat][card] = drawCard();
+        }
       }
+      for (uint8_t i = 0; i < 5; ++i) holdemCommunity_[i] = drawCard();
+
+      holdemDealerSeat_ = static_cast<uint8_t>((holdemDealerSeat_ + 1) % HOLDEM_SEATS);
+      const uint8_t smallBlind = static_cast<uint8_t>((holdemDealerSeat_ + 1) % HOLDEM_SEATS);
+      const uint8_t bigBlind = static_cast<uint8_t>((holdemDealerSeat_ + 2) % HOLDEM_SEATS);
+      holdemPot_ = 0;
       holdemCommunityShown_ = 0;
-      holdemAction_ = HoldemAction::Check;
-      holdemPot_ = bet() * 2;
-      holdemStake_ = bet();
+      holdemCurrentBet_ = holdemBigBlind_;
+      holdemStake_ = 0;
+      holdemWinnerSeat_ = 255;
+      holdemWinnerCount_ = 0;
+      holdemWinningScore_ = 0;
+      playerPokerScore_ = 0;
+      dealerPokerScore_ = 0;
       outcome_ = Outcome::None;
+      lastWin_ = 0;
+      postHoldemChips(smallBlind, holdemBigBlind_ / 2);
+      postHoldemChips(bigBlind, holdemBigBlind_);
+      holdemActor_ = nextHoldemSeat(bigBlind, true);
+      holdemAction_ = HoldemAction::Check;
+      holdemRaiseAmount_ = holdemBigBlind_;
+      holdemActionTimerMs_ = 0;
+      holdemMessage_ = "Blinds posted";
       screen_ = Screen::HoldemAction;
       dirty_ = true;
     }
 
     void playHoldemAction(uint16_t playerInitials) {
+      if (screen_ != Screen::HoldemAction || holdemActor_ != 0 || holdemFolded_[0]) return;
+      if (playerInitials != 0) currentInitials_ = playerInitials;
       if (holdemAction_ == HoldemAction::Fold) {
-        outcome_ = Outcome::Lose;
-        pay(0, playerInitials);
-        screen_ = Screen::HoldemResult;
+        holdemFolded_[0] = true;
+        holdemActed_[0] = true;
+        holdemMessage_ = "You fold - table plays";
+      } else if (holdemAction_ == HoldemAction::Raise) {
+        const Money due = holdemCallAmount();
+        Money raise = holdemRaiseAmount_ < holdemBigBlind_ ? holdemBigBlind_ : holdemRaiseAmount_;
+        if (holdemCurrentBet_ + raise > holdemMaxBet_) raise = holdemMaxBet_ - holdemCurrentBet_;
+        const Money availableRaise = bankroll_ > due ? bankroll_ - due : 0;
+        if (raise > availableRaise) raise = availableRaise;
+        if (raise == 0) {
+          postHoldemChips(0, due);
+          holdemMessage_ = due == 0 ? "You check" : "You call";
+        } else {
+          for (uint8_t seat = 0; seat < HOLDEM_SEATS; ++seat) {
+            if (!holdemFolded_[seat] && !holdemAllIn_[seat]) holdemActed_[seat] = false;
+          }
+          holdemCurrentBet_ += raise;
+          postHoldemChips(0, due + raise);
+          holdemMessage_ = "You raise";
+        }
+        holdemActed_[0] = true;
+      } else {
+        const Money due = holdemCallAmount();
+        postHoldemChips(0, due);
+        holdemActed_[0] = true;
+        holdemMessage_ = due == 0 ? "You check" : "You call";
+      }
+      advanceHoldemTurn(currentInitials_);
+    }
+
+    void updateHoldem(uint32_t deltaMs, uint16_t playerInitials) {
+      if (holdemActor_ == 0 || screen_ != Screen::HoldemAction) return;
+      holdemActionTimerMs_ = static_cast<uint16_t>(holdemActionTimerMs_ + deltaMs);
+      if (holdemActionTimerMs_ < 520) return;
+      holdemActionTimerMs_ = 0;
+      playNpcHoldemTurn(holdemActor_);
+      advanceHoldemTurn(playerInitials);
+      dirty_ = true;
+    }
+
+    void postHoldemChips(uint8_t seat, Money amount) {
+      seat %= HOLDEM_SEATS;
+      if (amount == 0) return;
+      if (seat == 0 && amount > bankroll_) {
+        amount = bankroll_;
+        holdemAllIn_[0] = true;
+      }
+      if (seat == 0) bankroll_ -= amount;
+      holdemStreetBet_[seat] += amount;
+      holdemTotalBet_[seat] += amount;
+      holdemPot_ += amount;
+      if (seat == 0) holdemStake_ += amount;
+    }
+
+    uint8_t nextHoldemSeat(uint8_t after, bool needsAction) const {
+      for (uint8_t offset = 1; offset <= HOLDEM_SEATS; ++offset) {
+        const uint8_t seat = static_cast<uint8_t>((after + offset) % HOLDEM_SEATS);
+        if (holdemFolded_[seat] || holdemAllIn_[seat]) continue;
+        if (!needsAction || !holdemActed_[seat] || holdemStreetBet_[seat] < holdemCurrentBet_) return seat;
+      }
+      return 255;
+    }
+
+    uint8_t activeHoldemSeats() const {
+      uint8_t count = 0;
+      for (uint8_t seat = 0; seat < HOLDEM_SEATS; ++seat) if (!holdemFolded_[seat]) count++;
+      return count;
+    }
+
+    bool holdemBettingComplete() const {
+      for (uint8_t seat = 0; seat < HOLDEM_SEATS; ++seat) {
+        if (holdemFolded_[seat] || holdemAllIn_[seat]) continue;
+        if (!holdemActed_[seat] || holdemStreetBet_[seat] < holdemCurrentBet_) return false;
+      }
+      return true;
+    }
+
+    void advanceHoldemTurn(uint16_t playerInitials) {
+      if (activeHoldemSeats() == 1) {
+        settleHoldemByFold(playerInitials);
         return;
       }
-      if (holdemAction_ == HoldemAction::Raise) {
-        if (bankroll_ >= bet()) {
-          bankroll_ -= bet();
-          holdemStake_ += bet();
-          holdemPot_ += bet() * 2;
-          if ((rand32() % 10) == 0) {
-            outcome_ = Outcome::Win;
-            pay(holdemPot_, playerInitials);
-            screen_ = Screen::HoldemResult;
-            return;
-          }
-        }
+      if (holdemBettingComplete()) {
+        advanceHoldemStreet(playerInitials);
+        return;
       }
-      if (holdemCommunityShown_ == 0) {
-        holdemCommunityShown_ = 3;
-      } else if (holdemCommunityShown_ < 5) {
-        holdemCommunityShown_++;
-      } else {
+      const uint8_t next = nextHoldemSeat(holdemActor_, true);
+      if (next == 255) {
+        advanceHoldemStreet(playerInitials);
+        return;
+      }
+      holdemActor_ = next;
+      holdemActionTimerMs_ = 0;
+      if (holdemActor_ == 0) holdemAction_ = HoldemAction::Check;
+    }
+
+    void advanceHoldemStreet(uint16_t playerInitials) {
+      if (holdemCommunityShown_ == 0) holdemCommunityShown_ = 3;
+      else if (holdemCommunityShown_ < 5) holdemCommunityShown_++;
+      else {
         settleHoldem(playerInitials);
+        return;
+      }
+      memset(holdemStreetBet_, 0, sizeof(holdemStreetBet_));
+      memset(holdemActed_, 0, sizeof(holdemActed_));
+      holdemCurrentBet_ = 0;
+      holdemActor_ = nextHoldemSeat(holdemDealerSeat_, true);
+      holdemActionTimerMs_ = 0;
+      holdemMessage_ = holdemCommunityShown_ == 3 ? "The flop" : (holdemCommunityShown_ == 4 ? "The turn" : "The river");
+      if (holdemActor_ == 255) settleHoldem(playerInitials);
+    }
+
+    uint8_t holdemStrength(uint8_t seat) const {
+      const uint8_t a = rankValue(holdemCards_[seat][0]);
+      const uint8_t b = rankValue(holdemCards_[seat][1]);
+      if (holdemCommunityShown_ == 0) {
+        uint8_t strength = static_cast<uint8_t>((a + b) * 2);
+        if (a == b) strength = static_cast<uint8_t>(strength + 30);
+        if (cardSuit(holdemCards_[seat][0]) == cardSuit(holdemCards_[seat][1])) strength += 8;
+        const uint8_t gap = a > b ? a - b : b - a;
+        if (gap <= 2) strength += 6;
+        return strength > 100 ? 100 : strength;
+      }
+      uint8_t cards[7] = {holdemCards_[seat][0], holdemCards_[seat][1], 0, 0, 0, 0, 0};
+      for (uint8_t i = 0; i < holdemCommunityShown_; ++i) cards[2 + i] = holdemCommunity_[i];
+      const uint32_t score = evaluateBest(cards, static_cast<uint8_t>(2 + holdemCommunityShown_));
+      const uint8_t category = scoreCategory(score);
+      const uint8_t high = static_cast<uint8_t>((score >> 20) & 0x0F);
+      return static_cast<uint8_t>(category * 10 + high * 2 > 100 ? 100 : category * 10 + high * 2);
+    }
+
+    void playNpcHoldemTurn(uint8_t seat) {
+      const Money due = holdemCurrentBet_ > holdemStreetBet_[seat]
+                            ? holdemCurrentBet_ - holdemStreetBet_[seat]
+                            : 0;
+      const uint8_t strength = holdemStrength(seat);
+      const uint8_t jitter = static_cast<uint8_t>(rand32() % 21);
+      const uint8_t foldLimit = seat == 1 ? 20 : (seat == 2 ? 46 : 32);
+      const uint8_t raiseLimit = seat == 1 ? 50 : (seat == 2 ? 82 : 68);
+      const uint8_t pressure = holdemBigBlind_ == 0 ? 0 : static_cast<uint8_t>((due / holdemBigBlind_) * 8);
+
+      if (due > 0 && strength + jitter < foldLimit + pressure) {
+        holdemFolded_[seat] = true;
+        holdemActed_[seat] = true;
+        holdemMessage_ = seat == 1 ? "Blaze folds" : (seat == 2 ? "Sage folds" : "Ace folds");
+        return;
+      }
+
+      const bool canRaise = holdemCurrentBet_ + holdemBigBlind_ <= holdemMaxBet_;
+      if (canRaise && strength + jitter >= raiseLimit) {
+        const Money raise = seat == 1 && (rand32() & 1) ? holdemBigBlind_ * 2 : holdemBigBlind_;
+        for (uint8_t other = 0; other < HOLDEM_SEATS; ++other) {
+          if (!holdemFolded_[other] && !holdemAllIn_[other]) holdemActed_[other] = false;
+        }
+        const Money cappedRaise = holdemCurrentBet_ + raise > holdemMaxBet_
+                                      ? holdemMaxBet_ - holdemCurrentBet_
+                                      : raise;
+        holdemCurrentBet_ += cappedRaise;
+        postHoldemChips(seat, due + cappedRaise);
+        holdemActed_[seat] = true;
+        holdemMessage_ = seat == 1 ? "Blaze raises" : (seat == 2 ? "Sage raises" : "Ace raises");
+      } else {
+        postHoldemChips(seat, due);
+        holdemActed_[seat] = true;
+        holdemMessage_ = due == 0 ? "NPC checks" : "NPC calls";
       }
     }
 
-    void settleHoldem(uint16_t playerInitials) {
-      uint8_t playerSeven[7] = {holdemPlayer_[0], holdemPlayer_[1], holdemCommunity_[0], holdemCommunity_[1],
-                                holdemCommunity_[2], holdemCommunity_[3], holdemCommunity_[4]};
-      uint8_t dealerSeven[7] = {holdemDealer_[0], holdemDealer_[1], holdemCommunity_[0], holdemCommunity_[1],
-                                holdemCommunity_[2], holdemCommunity_[3], holdemCommunity_[4]};
-      playerPokerScore_ = evaluateBest(playerSeven, 7);
-      dealerPokerScore_ = evaluateBest(dealerSeven, 7);
-      if (playerPokerScore_ > dealerPokerScore_) {
+    void settleHoldemByFold(uint16_t playerInitials) {
+      uint8_t winner = 0;
+      while (winner < HOLDEM_SEATS && holdemFolded_[winner]) winner++;
+      holdemWinnerSeat_ = winner;
+      holdemWinnerCount_ = 1;
+      holdemWinningScore_ = 0;
+      if (winner == 0) {
         outcome_ = Outcome::Win;
         pay(holdemPot_, playerInitials);
-      } else if (playerPokerScore_ == dealerPokerScore_) {
-        outcome_ = Outcome::Push;
-        pay(holdemStake_, playerInitials);
+        holdemMessage_ = "Everyone folded";
       } else {
         outcome_ = Outcome::Lose;
         pay(0, playerInitials);
+        holdemMessage_ = "You lose";
       }
       screen_ = Screen::HoldemResult;
+      dirty_ = true;
+    }
+
+    void settleHoldem(uint16_t playerInitials) {
+      holdemWinnerSeat_ = 255;
+      holdemWinnerCount_ = 0;
+      holdemWinningScore_ = 0;
+      for (uint8_t seat = 0; seat < HOLDEM_SEATS; ++seat) {
+        if (holdemFolded_[seat]) continue;
+        uint8_t seven[7] = {holdemCards_[seat][0], holdemCards_[seat][1],
+                            holdemCommunity_[0], holdemCommunity_[1], holdemCommunity_[2],
+                            holdemCommunity_[3], holdemCommunity_[4]};
+        holdemSeatScores_[seat] = evaluateBest(seven, 7);
+        if (holdemSeatScores_[seat] > holdemWinningScore_) {
+          holdemWinningScore_ = holdemSeatScores_[seat];
+          holdemWinnerSeat_ = seat;
+          holdemWinnerCount_ = 1;
+        } else if (holdemSeatScores_[seat] == holdemWinningScore_) {
+          holdemWinnerCount_++;
+        }
+      }
+      playerPokerScore_ = holdemSeatScores_[0];
+      dealerPokerScore_ = holdemWinnerSeat_ < HOLDEM_SEATS ? holdemSeatScores_[holdemWinnerSeat_] : 0;
+      if (!holdemFolded_[0] && playerPokerScore_ == holdemWinningScore_) {
+        outcome_ = holdemWinnerCount_ > 1 ? Outcome::Push : Outcome::Win;
+        pay(holdemWinnerCount_ == 0 ? 0 : holdemPot_ / holdemWinnerCount_, playerInitials);
+        holdemMessage_ = outcome_ == Outcome::Win ? "You win" : "Split pot";
+      } else {
+        outcome_ = Outcome::Lose;
+        pay(0, playerInitials);
+        holdemMessage_ = "You lose";
+      }
+      screen_ = Screen::HoldemResult;
+      dirty_ = true;
     }
 
     void startVideoPoker() {
@@ -1247,6 +1625,9 @@ class Logic {
       memset(videoHeld_, 0, sizeof(videoHeld_));
       videoMultiplier_ = 0;
       videoScore_ = 0;
+      videoAnimating_ = false;
+      videoDrawPhase_ = false;
+      videoAnimationMs_ = 0;
     }
 
     void dealVideoPoker(uint16_t playerInitials) {
@@ -1261,25 +1642,53 @@ class Logic {
       videoMultiplier_ = 0;
       videoScore_ = 0;
       screen_ = Screen::VideoHold;
+      videoAnimating_ = true;
+      videoDrawPhase_ = false;
+      videoAnimationMs_ = 0;
+      dirty_ = true;
     }
 
     void drawVideoPoker(uint16_t playerInitials) {
+      if (videoAnimating_) return;
       for (uint8_t i = 0; i < 5; i++) {
         if (!videoHeld_[i]) {
           videoCards_[i] = drawCard();
         }
       }
+      videoAnimating_ = true;
+      videoDrawPhase_ = true;
+      videoAnimationMs_ = 0;
+      dirty_ = true;
+    }
+
+    void updateVideoAnimation(uint32_t deltaMs, uint16_t playerInitials) {
+      videoAnimationMs_ = static_cast<uint16_t>(videoAnimationMs_ + deltaMs);
+      if (videoAnimationMs_ < 760) {
+        dirty_ = true;
+        return;
+      }
+
+      videoAnimating_ = false;
+      if (!videoDrawPhase_) {
+        dirty_ = true;
+        return;
+      }
+
       videoScore_ = evaluateFive(videoCards_);
       videoMultiplier_ = videoPokerMultiplier(videoScore_);
       outcome_ = videoMultiplier_ > 0 ? Outcome::Win : Outcome::Lose;
       pay(bet() * videoMultiplier_, playerInitials);
       screen_ = Screen::VideoResult;
+      videoDrawPhase_ = false;
+      dirty_ = true;
     }
 
     uint32_t rng_ = 0xA53C9E11UL;
     Money bankroll_ = START_BANKROLL;
-    Money bestBankroll_ = START_BANKROLL;
-    uint16_t bestInitials_ = 0;
+    Money bestCashout_ = 0;
+    uint16_t bestCashoutInitials_ = 0;
+    Money lastCashout_ = 0;
+    Money gameStartBankroll_ = START_BANKROLL;
     uint16_t currentInitials_ = 0;
     uint8_t betIndex_ = 0;
     Screen screen_ = Screen::Hub;
@@ -1302,6 +1711,7 @@ class Logic {
     uint8_t dealStep_ = 0;
 
     RouletteBet rouletteBet_ = RouletteBet::Red;
+    Money rouletteBets_[7] = {};
     uint8_t rouletteNumber_ = 0;
     uint16_t rouletteSpinMs_ = 0;
     bool rouletteWon_ = false;
@@ -1314,8 +1724,7 @@ class Logic {
     uint16_t slotWinMask_ = 0;
     bool slotModern_ = false;
 
-    uint8_t holdemPlayer_[2] = {};
-    uint8_t holdemDealer_[2] = {};
+    uint8_t holdemCards_[HOLDEM_SEATS][2] = {};
     uint8_t holdemCommunity_[5] = {};
     uint8_t holdemCommunityShown_ = 0;
     HoldemAction holdemAction_ = HoldemAction::Check;
@@ -1323,12 +1732,33 @@ class Logic {
     Money holdemStake_ = 0;
     uint32_t playerPokerScore_ = 0;
     uint32_t dealerPokerScore_ = 0;
+    bool holdemTableConfigured_ = false;
+    bool holdemFolded_[HOLDEM_SEATS] = {};
+    bool holdemAllIn_[HOLDEM_SEATS] = {};
+    bool holdemActed_[HOLDEM_SEATS] = {};
+    Money holdemStreetBet_[HOLDEM_SEATS] = {};
+    Money holdemTotalBet_[HOLDEM_SEATS] = {};
+    uint32_t holdemSeatScores_[HOLDEM_SEATS] = {};
+    Money holdemBigBlind_ = 5;
+    Money holdemMaxBet_ = 50;
+    Money holdemCurrentBet_ = 0;
+    Money holdemRaiseAmount_ = 5;
+    uint8_t holdemDealerSeat_ = 3;
+    uint8_t holdemActor_ = 0;
+    uint8_t holdemWinnerSeat_ = 255;
+    uint8_t holdemWinnerCount_ = 0;
+    uint16_t holdemActionTimerMs_ = 0;
+    uint32_t holdemWinningScore_ = 0;
+    const char* holdemMessage_ = "Choose a blind";
 
     uint8_t videoCards_[5] = {};
     bool videoHeld_[5] = {};
     uint8_t videoCursor_ = 0;
     uint16_t videoMultiplier_ = 0;
     uint32_t videoScore_ = 0;
+    bool videoAnimating_ = false;
+    bool videoDrawPhase_ = false;
+    uint16_t videoAnimationMs_ = 0;
 };
 
 }

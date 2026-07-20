@@ -36,7 +36,7 @@ class OptionsApp : public App {
     void markDirty();
 
     Mode mode_ = Mode::Main;
-    char initials_[3] = {'J', 'F', '\0'};
+    char initials_[3] = {'A', 'A', '\0'};
     uint8_t selected_ = 0;
     uint8_t mainIndex_ = 0;
     uint8_t saveIndex_ = 0;

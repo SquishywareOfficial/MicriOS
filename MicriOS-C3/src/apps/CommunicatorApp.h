@@ -67,8 +67,7 @@ class CommunicatorApp : public App {
     const DictNode* currentSendList(uint8_t& count) const;
     const DictNode* selectedSendNode() const;
     uint8_t selectedNodeIndex() const;
-    const char* packetLeafLabel(const MessagePacket& packet) const;
-    const char* nodeLabelAt(const MessagePacket& packet, uint8_t index) const;
+    String packetMessageText(const MessagePacket& packet) const;
     const char* recipientLabel(uint8_t index) const;
     void copyMac(uint8_t* dest, const uint8_t* src) const;
     bool selectedIsRepeat() const;
@@ -108,7 +107,7 @@ class CommunicatorApp : public App {
     bool clickPending_ = false;
     bool sendStatusPending_ = false;
     bool sendStatusSuccess_ = false;
-    char myInitials_[3] = {'J', 'F', '\0'};
+    char myInitials_[3] = {'A', 'A', '\0'};
     uint32_t clickPendingAtMs_ = 0;
     uint32_t feedbackMs_ = 0;
 };

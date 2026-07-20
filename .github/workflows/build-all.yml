@@ -25,6 +25,9 @@ jobs:
           - board: MicriOS-T-Display
             fqbn: esp32:esp32:esp32:PartitionScheme=huge_app
             chip: esp32
+          - board: MicriOS-CYD
+            fqbn: esp32:esp32:esp32:PartitionScheme=huge_app
+            chip: esp32
           - board: MicriOS-C3-Headless
             fqbn: esp32:esp32:esp32c3:PartitionScheme=huge_app
             chip: esp32c3
@@ -46,7 +49,7 @@ jobs:
         run: arduino-cli core update-index && arduino-cli core install esp32:esp32
 
       - name: Install libraries
-        run: arduino-cli lib install U8g2 "NimBLE-Arduino" "TFT_eSPI" ArduinoJson
+        run: arduino-cli lib install U8g2 "NimBLE-Arduino" "TFT_eSPI" ArduinoJson XPT2046_Touchscreen
 
       - name: Prepare shared code
         shell: bash
@@ -201,6 +204,21 @@ jobs:
           }
           EOF
 
+          cat > site/manifest-MicriOS-CYD.json <<EOF
+          {
+            "name": "MicriOS for CYD",
+            "version": "${build_text}",
+            "builds": [
+              {
+                "chipFamily": "ESP32",
+                "parts": [
+                  { "path": "firmware/MicriOS-CYD-firmware/MicriOS-CYD-merged.bin", "offset": 0 }
+                ]
+              }
+            ]
+          }
+          EOF
+
           cat > site/manifest.json <<EOF
           {
             "name": "MicriOS",
@@ -232,6 +250,13 @@ jobs:
                 "chipFamily": "ESP32-S3",
                 "parts": [
                   { "path": "firmware/MicriOS-S3-Zero-Headless-firmware/MicriOS-S3-Zero-Headless-merged.bin", "offset": 0 }
+                ]
+              },
+              {
+                "name": "MicriOS for CYD",
+                "chipFamily": "ESP32",
+                "parts": [
+                  { "path": "firmware/MicriOS-CYD-firmware/MicriOS-CYD-merged.bin", "offset": 0 }
                 ]
               }
             ]
@@ -285,6 +310,7 @@ jobs:
           Includes firmware packages for:
           - MicriOS for C3
           - MicriOS for T-Display
+          - MicriOS for CYD
           - MicriOS for C3 Headless
           - MicriOS for S3-Zero Headless
 

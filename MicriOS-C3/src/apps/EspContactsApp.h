@@ -54,7 +54,7 @@ class EspContactsApp : public App {
     bool radioStarted_ = false;
     bool sendPending_ = false;
     bool sendSuccess_ = false;
-    char myInitials_[3] = {'J', 'F', '\0'};
+    char myInitials_[3] = {'A', 'A', '\0'};
     char lastSeen_[6] = "";
     const char* feedbackText_ = "";
     uint16_t feedbackMs_ = 0;

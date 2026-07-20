@@ -5,6 +5,7 @@ Focused docs for MicriOS setup, flashing, and larger app workflows.
 ## User Guides
 
 - [Flashing MicriOS](flashing.md)
+- [ESP32-CYD touch build](cyd.md)
 - [Game guides](games.md)
 - [Mouse Emulator (Mouse Jiggler)](mouse-emulator.md)
 - [Micri Miner](micri-miner.md)

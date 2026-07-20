@@ -119,6 +119,21 @@
             </ul>
             <esp-web-install-button manifest="manifest-MicriOS-S3-Zero-Headless.json"></esp-web-install-button>
           </article>
+
+          <article class="card card-cyd">
+            <div class="card-visual t-display" aria-hidden="true">
+              <span>320x240</span>
+            </div>
+            <h3>MicriOS for CYD</h3>
+            <p>ESP32-2432S028 Cheap Yellow Display build with a touch-native MicriOS shell.</p>
+            <ul>
+              <li>Chip: classic ESP32</li>
+              <li>Screen: ILI9341 320x240 touch TFT</li>
+              <li>First boot guides you through four-point touch calibration.</li>
+              <li>Games use the whole canvas as one or two large touch controls.</li>
+            </ul>
+            <esp-web-install-button manifest="manifest-MicriOS-CYD.json"></esp-web-install-button>
+          </article>
         </div>
       </section>
 
@@ -127,8 +142,9 @@
           <h2 id="about-title">What is MicriOS?</h2>
           <p>
             MicriOS is a tiny ESP32 app launcher with board-specific interfaces and shared app logic.
-            The C3 build is designed around extreme constraints, the T-Display build uses the larger
-            color screen for dashboards, and headless builds turn spare ESP32 boards into utility or miner nodes.
+            The C3 build is designed around extreme constraints, the T-Display and CYD builds use larger
+            color screens for dashboards, touch cards, and richer controls, and headless builds turn spare
+            ESP32 boards into utility or miner nodes.
           </p>
         </article>
         <article>

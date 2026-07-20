@@ -48,6 +48,6 @@ class MicriCasinoGame : public App {
     Casino::Logic logic_;
     bool loaded_ = false;
     Casino::Money savedBankroll_ = 0;
-    Casino::Money savedBestBankroll_ = 0;
-    uint16_t savedBestInitials_ = 0;
+    Casino::Money savedBestCashout_ = 0;
+    uint16_t savedBestCashoutInitials_ = 0;
 };

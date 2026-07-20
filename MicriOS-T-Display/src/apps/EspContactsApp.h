@@ -56,7 +56,7 @@ class EspContactsApp : public App {
     bool dirty_ = true;
     bool phaseCached_ = false;
     AppPhase renderedPhase_ = AppPhase::Start;
-    char myInitials_[3] = {'J', 'F', '\0'};
+    char myInitials_[3] = {'A', 'A', '\0'};
     char lastSeen_[6] = "";
     const char* feedbackText_ = "";
     uint16_t feedbackColor_ = 0;

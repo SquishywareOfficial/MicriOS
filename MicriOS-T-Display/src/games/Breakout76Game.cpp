@@ -15,6 +15,15 @@ constexpr uint8_t BRICK_H = 9;
 constexpr uint8_t BRICK_X = 17;
 constexpr uint8_t BRICK_Y = 34;
 constexpr uint8_t PADDLE_Y = 121;
+constexpr float BALL_RADIUS = 4.0f;
+constexpr float PLAY_LEFT = 5.0f;
+constexpr float PLAY_TOP = static_cast<float>(TDisplayUi::HEADER_H + 4);
+
+float clampFloat(float value, float minValue, float maxValue) {
+  if (value < minValue) return minValue;
+  if (value > maxValue) return maxValue;
+  return value;
+}
 }
 
 Breakout76Game::Breakout76Game(uint32_t width, uint32_t height)
@@ -135,34 +144,49 @@ void Breakout76Game::updateRunning(uint32_t deltaMs, const ButtonInput& b1, cons
   for (uint8_t i = 0; i < BALLS; i++) {
     if (!balls_[i].active) continue;
     Ball& b = balls_[i];
+    const float previousX = b.x;
+    const float previousY = b.y;
     b.x += b.vx * dt;
     b.y += b.vy * dt;
 
-    if (b.x <= 1.0f || b.x >= width - 2) {
-      b.x = b.x <= 1.0f ? 1.0f : static_cast<float>(width - 2);
-      b.vx = -b.vx;
+    const float minBallX = PLAY_LEFT + BALL_RADIUS;
+    const float maxBallX = static_cast<float>(width) - 6.0f - BALL_RADIUS;
+    const float minBallY = PLAY_TOP + BALL_RADIUS;
+    if (b.x < minBallX) {
+      b.x = minBallX;
+      if (b.vx < 0.0f) b.vx = -b.vx;
+    } else if (b.x > maxBallX) {
+      b.x = maxBallX;
+      if (b.vx > 0.0f) b.vx = -b.vx;
     }
-    if (b.y <= 1.0f) {
-      b.y = 1.0f;
-      b.vy = -b.vy;
+    if (b.y < minBallY) {
+      b.y = minBallY;
+      if (b.vy < 0.0f) b.vy = -b.vy;
     }
 
-    if (b.y >= PADDLE_Y - 2 && b.y <= PADDLE_Y + 1 && b.x >= paddleX_ && b.x <= paddleX_ + paddleW_ && b.vy > 0) {
+    if (b.vy > 0.0f && previousY + BALL_RADIUS <= PADDLE_Y &&
+        b.y + BALL_RADIUS >= PADDLE_Y &&
+        b.x + BALL_RADIUS >= paddleX_ &&
+        b.x - BALL_RADIUS <= paddleX_ + paddleW_) {
       const float hit = ((b.x - paddleX_) / static_cast<float>(paddleW_)) - 0.5f;
       b.vx = hit * 115.0f + paddleVel_ * 0.22f;
       b.vy = -(70.0f + static_cast<float>(level_) * 4.0f);
-      b.y = PADDLE_Y - 4;
+      b.y = PADDLE_Y - BALL_RADIUS;
     }
 
-    const int bx = static_cast<int>(b.x);
-    const int by = static_cast<int>(b.y);
     bool hitBrick = false;
     for (uint8_t r = 0; r < ROWS && !hitBrick; r++) {
       for (uint8_t c = 0; c < COLS; c++) {
         if (!bricks_[r][c]) continue;
-        const int x = BRICK_X + c * BRICK_W;
-        const int y = BRICK_Y + r * BRICK_H;
-        if (bx >= x && bx < x + BRICK_W - 2 && by >= y && by < y + BRICK_H - 2) {
+        const float brickLeft = static_cast<float>(BRICK_X + c * BRICK_W);
+        const float brickTop = static_cast<float>(BRICK_Y + r * BRICK_H);
+        const float brickRight = brickLeft + BRICK_W - 3.0f;
+        const float brickBottom = brickTop + BRICK_H - 2.0f;
+        const float closestX = clampFloat(b.x, brickLeft, brickRight);
+        const float closestY = clampFloat(b.y, brickTop, brickBottom);
+        const float dx = b.x - closestX;
+        const float dy = b.y - closestY;
+        if (dx * dx + dy * dy <= BALL_RADIUS * BALL_RADIUS) {
           bricks_[r][c] = false;
           bricksLeft_--;
           score_++;
@@ -170,8 +194,25 @@ void Breakout76Game::updateRunning(uint32_t deltaMs, const ButtonInput& b1, cons
             bestScore_ = score_;
             saveBestScore();
           }
-          spawnPower(static_cast<float>(x + 2), static_cast<float>(y + 2));
-          b.vy = -b.vy;
+          spawnPower(brickLeft + 2.0f, brickTop + 2.0f);
+          if (previousY + BALL_RADIUS <= brickTop && b.vy > 0.0f) {
+            b.y = brickTop - BALL_RADIUS;
+            b.vy = -abs(b.vy);
+          } else if (previousY - BALL_RADIUS >= brickBottom && b.vy < 0.0f) {
+            b.y = brickBottom + BALL_RADIUS;
+            b.vy = abs(b.vy);
+          } else if (previousX + BALL_RADIUS <= brickLeft && b.vx > 0.0f) {
+            b.x = brickLeft - BALL_RADIUS;
+            b.vx = -abs(b.vx);
+          } else if (previousX - BALL_RADIUS >= brickRight && b.vx < 0.0f) {
+            b.x = brickRight + BALL_RADIUS;
+            b.vx = abs(b.vx);
+          } else {
+            const float overlapX = BALL_RADIUS - abs(dx);
+            const float overlapY = BALL_RADIUS - abs(dy);
+            if (overlapX < overlapY) b.vx = -b.vx;
+            else b.vy = -b.vy;
+          }
           if ((level_ % 3) == 0 && c == COLS - 1) b.vx = -abs(b.vx) - 5.0f;
           hitBrick = true;
           break;
@@ -216,7 +257,9 @@ void Breakout76Game::drawRunning(TFT_eSPI& tft) {
     }
     for (uint8_t i = 0; i < BALLS; i++) {
       if (balls_[i].active) {
-        canvas.fillCircle(clampInt(static_cast<int>(balls_[i].x), 6, width - 7), clampInt(static_cast<int>(balls_[i].y), 31, height - 7), 4, TFT_WHITE);
+        canvas.fillCircle(static_cast<int>(balls_[i].x),
+                          static_cast<int>(balls_[i].y),
+                          static_cast<int>(BALL_RADIUS), TFT_WHITE);
       }
     }
     canvas.fillRoundRect(static_cast<int>(paddleX_), PADDLE_Y, paddleW_, 6, 3, wideTimerMs_ > 0 ? TFT_GREEN : TFT_WHITE);
@@ -269,12 +312,6 @@ void Breakout76Game::drawEnd(TFT_eSPI& tft) {
   }
   TDisplayUi::labelValue(tft, 78, "Best", best, TFT_YELLOW);
   TDisplayUi::footer(tft, "B1 retry  Hold menu");
-}
-
-int Breakout76Game::clampInt(int value, int minValue, int maxValue) const {
-  if (value < minValue) return minValue;
-  if (value > maxValue) return maxValue;
-  return value;
 }
 
 void Breakout76Game::loadBestScore() {

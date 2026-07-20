@@ -506,7 +506,11 @@ bool CommunicatorApp::sendPacket(const MessagePacket& packet, const uint8_t* mac
   }
 
   Serial.print("Communicator sent: ");
-  Serial.println(packet.type == static_cast<uint8_t>(CommunicatorLogic::PacketType::Contact) ? "contact" : packetLeafLabel(packet));
+  if (packet.type == static_cast<uint8_t>(CommunicatorLogic::PacketType::Contact)) {
+    Serial.println("contact");
+  } else {
+    Serial.println(packetMessageText(packet));
+  }
   return true;
 }
 
@@ -550,7 +554,7 @@ void CommunicatorApp::handleIncoming(const uint8_t* from, const uint8_t* data, i
   contactBook_.upsert(packet.from, from, millis());
   pushInbox(packet, from);
   Serial.print("Communicator received: ");
-  Serial.println(packetLeafLabel(packet));
+  Serial.println(packetMessageText(packet));
 }
 
 void CommunicatorApp::handleSendStatus(bool success) {
@@ -628,14 +632,8 @@ uint8_t CommunicatorApp::selectedNodeIndex() const {
   return sendIndex_;
 }
 
-const char* CommunicatorApp::packetLeafLabel(const MessagePacket& packet) const {
-  const DictNode* node = nodeAtPath(packet.path, packet.length);
-  return node == nullptr ? "?" : node->label;
-}
-
-const char* CommunicatorApp::nodeLabelAt(const MessagePacket& packet, uint8_t index) const {
-  const DictNode* node = nodeAtPath(packet.path, index + 1);
-  return node == nullptr ? "" : node->label;
+String CommunicatorApp::packetMessageText(const MessagePacket& packet) const {
+  return logic_.messageText(packet, CATEGORY_ITEMS, CATEGORY_COUNT);
 }
 
 void CommunicatorApp::copyMac(uint8_t* dest, const uint8_t* src) const {
@@ -709,7 +707,8 @@ void CommunicatorApp::drawSend(U8G2& u8g2) {
     if (sendDepth_ == 0 && item == 0) {
       snprintf(label, sizeof(label), "Send Name");
     } else if (sendDepth_ == 0 && hasLastSent_ && item == 1) {
-      snprintf(label, sizeof(label), "Last:%s", packetLeafLabel(lastSent_));
+      const String message = packetMessageText(lastSent_);
+      snprintf(label, sizeof(label), "Last:%s", message.c_str());
     } else {
       const uint8_t nodeIndex = sendDepth_ == 0 ? item - rootPrefixCount() : item;
       if (list != nullptr && nodeIndex < (sendDepth_ == 0 ? CATEGORY_COUNT : count)) {
@@ -758,7 +757,8 @@ void CommunicatorApp::drawInbox(U8G2& u8g2) {
       u8g2.drawStr(10, y, "Exit");
     } else {
       char label[18] = {};
-      snprintf(label, sizeof(label), "%c %s", inbox_[item].unread ? '*' : '<', packetLeafLabel(inbox_[item].packet));
+      const String message = packetMessageText(inbox_[item].packet);
+      snprintf(label, sizeof(label), "%c %s", inbox_[item].unread ? '*' : '<', message.c_str());
       drawFit(u8g2, 10, y, label, 15);
     }
   }
@@ -777,8 +777,21 @@ void CommunicatorApp::drawOpenMessage(U8G2& u8g2) {
   snprintf(line, sizeof(line), "%c%c>%s", packet.from[0], packet.from[1],
            CommunicatorLogic::isAllRecipient(packet.to) ? "ALL" : packet.to);
   drawFit(u8g2, 8, 15, line, 14);
-  for (uint8_t i = 0; i < packet.length && i < 3; i++) {
-    drawFit(u8g2, 8, 22 + i * 6, nodeLabelAt(packet, i), 14);
+
+  const String message = packetMessageText(packet);
+  uint8_t start = 0;
+  for (uint8_t row = 0; row < 3 && start < message.length(); row++) {
+    uint8_t end = start + 14;
+    if (end > message.length()) end = static_cast<uint8_t>(message.length());
+    if (end < message.length()) {
+      uint8_t split = end;
+      while (split > start && message[split] != ' ') split--;
+      if (split > start) end = split;
+    }
+    const String textLine = message.substring(start, end);
+    drawFit(u8g2, 8, 22 + row * 6, textLine.c_str(), 14);
+    start = end;
+    while (start < message.length() && message[start] == ' ') start++;
   }
   if (logic_.firmwareMismatch(packet)) {
     u8g2.drawStr(46, 39, "v!");
@@ -800,8 +813,8 @@ void CommunicatorApp::drawFeedback(U8G2& u8g2) {
   u8g2.drawStr((width + 2 - textW) / 2, 18, text);
 
   u8g2.setFont(u8g2_font_4x6_tr);
-  const char* label = hasLastSent_ ? packetLeafLabel(lastSent_) : "";
-  drawFit(u8g2, 5, 32, label, 15);
+  const String label = hasLastSent_ ? packetMessageText(lastSent_) : String();
+  drawFit(u8g2, 5, 32, label.c_str(), 15);
 }
 
 void CommunicatorApp::drawFit(U8G2& u8g2, int x, int y, const char* text, uint8_t maxChars) const {

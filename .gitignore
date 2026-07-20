@@ -8,5 +8,7 @@ MicriOS-C3-Headless/build/
 MicriOS-C3-Headless/src/shared/
 MicriOS-S3-Zero-Headless/build/
 MicriOS-S3-Zero-Headless/src/shared/
+MicriOS-CYD/build/
+MicriOS-CYD/src/shared/
 dist/
 site/

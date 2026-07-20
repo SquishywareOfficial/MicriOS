@@ -57,6 +57,24 @@ public:
         mode_ = Mode::Result;
     }
 
+    void setIncludeZero(bool includeZero) { includeZero_ = includeZero; }
+
+    void chooseRange(uint8_t index) {
+        rangeIndex_ = index % RANGE_COUNT;
+        mode_ = Mode::Range;
+        rolled_ = false;
+    }
+
+    void beginRangeSelection() {
+        mode_ = Mode::Range;
+        rolled_ = false;
+    }
+
+    void beginEditing() {
+        mode_ = Mode::IncludeZero;
+        rolled_ = false;
+    }
+
     static uint32_t getRangeAt(uint8_t index) {
         static const uint32_t ranges[RANGE_COUNT] = {
             10, 20, 30, 40, 50, 60, 70, 80, 90, 100,

@@ -50,6 +50,15 @@ public:
         animMs_ = 0;
     }
 
+    bool selectDice(uint8_t sides) {
+        for (uint8_t i = 0; i < DICE_COUNT; ++i) {
+            if (DICE[i] != sides) continue;
+            selectedIdx_ = i;
+            return true;
+        }
+        return false;
+    }
+
     Mode getMode() const { return mode_; }
     uint8_t getSelectedDice() const { return DICE[selectedIdx_]; }
     uint8_t getResult() const { return result_; }

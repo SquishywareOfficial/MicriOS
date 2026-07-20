@@ -34,14 +34,14 @@ void MicriCasinoGame::ensureLoaded() {
   }
   casinoPrefs.begin(CASINO_NS, true);
   const Casino::Money bank = casinoPrefs.getUInt("bank", Casino::START_BANKROLL);
-  const Casino::Money best = casinoPrefs.getUInt("best", Casino::START_BANKROLL);
-  const uint16_t initials = casinoPrefs.getUShort("init", PlayerProfile::defaultInitials());
+  const Casino::Money best = casinoPrefs.getUInt("cashout", 0);
+  const uint16_t initials = casinoPrefs.getUShort("cashwho", PlayerProfile::defaultInitials());
   casinoPrefs.end();
   logic_.seed(micros() ^ millis());
   logic_.loadBankroll(bank, best, initials);
   savedBankroll_ = logic_.bankroll();
-  savedBestBankroll_ = logic_.bestBankroll();
-  savedBestInitials_ = logic_.bestInitials();
+  savedBestCashout_ = logic_.bestCashout();
+  savedBestCashoutInitials_ = logic_.bestCashoutInitials();
   loaded_ = true;
 }
 
@@ -50,18 +50,18 @@ void MicriCasinoGame::saveBankroll() {
     return;
   }
   if (savedBankroll_ == logic_.bankroll() &&
-      savedBestBankroll_ == logic_.bestBankroll() &&
-      savedBestInitials_ == logic_.bestInitials()) {
+      savedBestCashout_ == logic_.bestCashout() &&
+      savedBestCashoutInitials_ == logic_.bestCashoutInitials()) {
     return;
   }
   casinoPrefs.begin(CASINO_NS, false);
   casinoPrefs.putUInt("bank", logic_.bankroll());
-  casinoPrefs.putUInt("best", logic_.bestBankroll());
-  casinoPrefs.putUShort("init", logic_.bestInitials());
+  casinoPrefs.putUInt("cashout", logic_.bestCashout());
+  casinoPrefs.putUShort("cashwho", logic_.bestCashoutInitials());
   casinoPrefs.end();
   savedBankroll_ = logic_.bankroll();
-  savedBestBankroll_ = logic_.bestBankroll();
-  savedBestInitials_ = logic_.bestInitials();
+  savedBestCashout_ = logic_.bestCashout();
+  savedBestCashoutInitials_ = logic_.bestCashoutInitials();
 }
 
 uint16_t MicriCasinoGame::playerInitials() const {
@@ -137,10 +137,10 @@ void MicriCasinoGame::drawStart(U8G2& u8g2) {
   drawFrame(u8g2, "Casino");
   if (showStartScorePage()) {
     char dotted[4];
-    PlayerProfile::unpackDottedInitials(logic_.bestInitials(), dotted);
+    PlayerProfile::unpackDottedInitials(logic_.bestCashoutInitials(), dotted);
     u8g2.setFont(u8g2_font_4x6_tr);
-    u8g2.drawStr(4, 18, "Top Bank");
-    drawMoney(u8g2, 4, 28, "", logic_.bestBankroll());
+    u8g2.drawStr(4, 18, "Best Cash");
+    drawMoney(u8g2, 4, 28, "", logic_.bestCashout());
     u8g2.drawStr(44, 28, dotted);
   } else if (showStartPromptPage()) {
     u8g2.setFont(u8g2_font_4x6_tr);
@@ -233,7 +233,11 @@ void MicriCasinoGame::drawBlackjack(U8G2& u8g2) {
   drawBlackjackCards(u8g2, 10, 15, logic_.dealerCards(), logic_.dealerCount(), logic_.blackjackHideDealer());
   u8g2.drawStr(2, 27, "P");
   drawBlackjackCards(u8g2, 10, 27, logic_.playerCards(), logic_.playerCount(), false);
-  u8g2.drawStr(2, 38, logic_.blackjackFooterText());
+  if (logic_.screen() == Casino::Screen::BlackjackResult) {
+    u8g2.drawStr(2, 38, Casino::blackjackResultName(logic_.outcome()));
+  } else {
+    u8g2.drawStr(2, 38, logic_.blackjackFooterText());
+  }
 }
 
 void MicriCasinoGame::drawRoulette(U8G2& u8g2) {
@@ -297,12 +301,12 @@ void MicriCasinoGame::drawHoldem(U8G2& u8g2) {
   drawFrame(u8g2, "Holdem");
   if (logic_.screen() == Casino::Screen::HoldemBet) {
     u8g2.setFont(u8g2_font_5x8_tr);
-    u8g2.drawStr(16, 17, "Bet");
+    u8g2.drawStr(10, 17, "Blind");
     u8g2.setCursor(37, 17);
     u8g2.print(logic_.bet());
     u8g2.setFont(u8g2_font_4x6_tr);
-    u8g2.drawStr(3, 31, "Tap stake");
-    u8g2.drawStr(3, 38, "Hold deal");
+    u8g2.drawStr(3, 31, "Tap blind");
+    u8g2.drawStr(3, 38, "Hold join");
     return;
   }
   u8g2.setFont(u8g2_font_4x6_tr);
@@ -312,7 +316,9 @@ void MicriCasinoGame::drawHoldem(U8G2& u8g2) {
   drawCardLine(u8g2, 24, 23, logic_.holdemCommunity(), logic_.communityShown(), 5);
   if (logic_.screen() == Casino::Screen::HoldemAction) {
     u8g2.setFont(u8g2_font_5x8_tr);
-    u8g2.drawStr(3, 35, Casino::holdemActionName(logic_.holdemAction()));
+    u8g2.drawStr(3, 35, logic_.holdemActor() == 0
+                              ? Casino::holdemActionName(logic_.holdemAction())
+                              : logic_.holdemMessage());
   } else {
     u8g2.setFont(u8g2_font_5x8_tr);
     u8g2.drawStr(3, 35, Casino::outcomeName(logic_.outcome()));
@@ -328,9 +334,13 @@ void MicriCasinoGame::drawVideoPoker(U8G2& u8g2) {
     u8g2.drawStr(3, 38, "Tap bet Hold deal");
     return;
   }
-  drawCardLine(u8g2, 4, 17, logic_.videoCards(), 5, 5);
+  uint8_t displayCards[5];
+  for (uint8_t i = 0; i < 5; i++) displayCards[i] = logic_.videoDisplayCard(i);
+  drawCardLine(u8g2, 4, 17, displayCards, 5, 5);
   u8g2.setFont(u8g2_font_4x6_tr);
-  if (logic_.screen() == Casino::Screen::VideoHold) {
+  if (logic_.videoAnimating()) {
+    u8g2.drawStr(3, 38, logic_.videoDrawing() ? "Drawing..." : "Dealing...");
+  } else if (logic_.screen() == Casino::Screen::VideoHold) {
     for (uint8_t i = 0; i < 5; i++) {
       if (logic_.videoHeld(i)) {
         u8g2.drawStr(5 + i * 11, 26, "H");
@@ -360,8 +370,8 @@ void MicriCasinoGame::drawBroke(U8G2& u8g2) {
 void MicriCasinoGame::drawCashOut(U8G2& u8g2) {
   drawFrame(u8g2, "Cash Out");
   u8g2.setFont(u8g2_font_5x8_tr);
-  u8g2.drawStr(5, 17, "Top saved");
-  drawMoney(u8g2, 4, 30, "Bank", logic_.bankroll());
+  u8g2.drawStr(5, 17, "Cashed out");
+  drawMoney(u8g2, 4, 30, "", logic_.lastCashout());
   u8g2.setFont(u8g2_font_4x6_tr);
   u8g2.drawStr(3, 38, "Tap back");
 }

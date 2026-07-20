@@ -23,6 +23,12 @@ String money(Casino::Money value) {
   return "$" + String(static_cast<unsigned long>(value));
 }
 
+String signedMoney(int32_t value) {
+  if (value == 0) return "$0";
+  const Casino::Money magnitude = static_cast<Casino::Money>(value < 0 ? -value : value);
+  return String(value > 0 ? "+" : "-") + money(magnitude);
+}
+
 uint16_t slotColor(uint8_t symbol) {
   switch (symbol % 8) {
     case 0: return TFT_YELLOW;
@@ -70,14 +76,14 @@ void MicriCasinoGame::ensureLoaded() {
   }
   casinoPrefs.begin(CASINO_NS, true);
   const Casino::Money bank = casinoPrefs.getUInt("bank", Casino::START_BANKROLL);
-  const Casino::Money best = casinoPrefs.getUInt("best", Casino::START_BANKROLL);
-  const uint16_t initials = casinoPrefs.getUShort("init", PlayerProfile::defaultInitials());
+  const Casino::Money best = casinoPrefs.getUInt("cashout", 0);
+  const uint16_t initials = casinoPrefs.getUShort("cashwho", PlayerProfile::defaultInitials());
   casinoPrefs.end();
   logic_.seed(micros() ^ millis());
   logic_.loadBankroll(bank, best, initials);
   savedBankroll_ = logic_.bankroll();
-  savedBestBankroll_ = logic_.bestBankroll();
-  savedBestInitials_ = logic_.bestInitials();
+  savedBestCashout_ = logic_.bestCashout();
+  savedBestCashoutInitials_ = logic_.bestCashoutInitials();
   loaded_ = true;
 }
 
@@ -86,18 +92,18 @@ void MicriCasinoGame::saveBankroll() {
     return;
   }
   if (savedBankroll_ == logic_.bankroll() &&
-      savedBestBankroll_ == logic_.bestBankroll() &&
-      savedBestInitials_ == logic_.bestInitials()) {
+      savedBestCashout_ == logic_.bestCashout() &&
+      savedBestCashoutInitials_ == logic_.bestCashoutInitials()) {
     return;
   }
   casinoPrefs.begin(CASINO_NS, false);
   casinoPrefs.putUInt("bank", logic_.bankroll());
-  casinoPrefs.putUInt("best", logic_.bestBankroll());
-  casinoPrefs.putUShort("init", logic_.bestInitials());
+  casinoPrefs.putUInt("cashout", logic_.bestCashout());
+  casinoPrefs.putUShort("cashwho", logic_.bestCashoutInitials());
   casinoPrefs.end();
   savedBankroll_ = logic_.bankroll();
-  savedBestBankroll_ = logic_.bestBankroll();
-  savedBestInitials_ = logic_.bestInitials();
+  savedBestCashout_ = logic_.bestCashout();
+  savedBestCashoutInitials_ = logic_.bestCashoutInitials();
 }
 
 uint16_t MicriCasinoGame::playerInitials() const {
@@ -133,7 +139,30 @@ void MicriCasinoGame::updateRunning(uint32_t deltaMs, const ButtonInput& b1, con
 template <typename Canvas>
 void MicriCasinoGame::drawShell(Canvas& canvas, const char* title) {
   canvas.fillScreen(TFT_BLACK);
-  TDisplayUi::header(canvas, title, TFT_GOLD, money(logic_.bankroll()).c_str());
+  canvas.fillRect(0, 0, TDisplayUi::W, TDisplayUi::HEADER_H, TFT_BLACK);
+  canvas.drawFastHLine(0, TDisplayUi::HEADER_H - 1, TDisplayUi::W, TFT_DARKGREY);
+  canvas.setTextDatum(TL_DATUM);
+  canvas.setTextSize(2);
+  canvas.setTextColor(TFT_GOLD, TFT_BLACK);
+  canvas.drawString(TDisplayUi::fitText(canvas, title, 138), TDisplayUi::PAD, 7);
+
+  const bool showGame = logic_.screen() != Casino::Screen::Hub &&
+                        logic_.screen() != Casino::Screen::CashOut &&
+                        logic_.screen() != Casino::Screen::Broke;
+  canvas.setTextSize(1);
+  const String wallet = "Wallet " + money(logic_.bankroll());
+  canvas.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+  canvas.drawString(wallet,
+                    TDisplayUi::W - TDisplayUi::PAD - canvas.textWidth(wallet),
+                    showGame ? 2 : 10);
+  if (showGame) {
+    const int32_t net = logic_.gameProfitLoss();
+    const String game = "Game " + signedMoney(net);
+    canvas.setTextColor(net > 0 ? TFT_GREEN : (net < 0 ? TFT_RED : TFT_YELLOW),
+                        TFT_BLACK);
+    canvas.drawString(game,
+                      TDisplayUi::W - TDisplayUi::PAD - canvas.textWidth(game), 15);
+  }
   TDisplayUi::footer(canvas, "B1 next  Hold ok  B2 back");
 }
 
@@ -186,9 +215,9 @@ void MicriCasinoGame::drawStart(TFT_eSPI& tft) {
     drawShell(canvas, "Micri Casino");
     if (showStartScorePage()) {
       char dotted[4];
-      PlayerProfile::unpackDottedInitials(logic_.bestInitials(), dotted);
-      TDisplayUi::centered(canvas, "Top Bank", 45, 2, TFT_LIGHTGREY);
-      TDisplayUi::largeValue(canvas, money(logic_.bestBankroll()), 65, TFT_GREEN);
+      PlayerProfile::unpackDottedInitials(logic_.bestCashoutInitials(), dotted);
+      TDisplayUi::centered(canvas, "Best Cashout", 45, 2, TFT_LIGHTGREY);
+      TDisplayUi::largeValue(canvas, money(logic_.bestCashout()), 65, TFT_GREEN);
       TDisplayUi::centered(canvas, dotted, 108, 1, TFT_WHITE);
     } else if (showStartPromptPage()) {
       TDisplayUi::largeValue(canvas, "PRESS", 45, TFT_GREEN);
@@ -262,7 +291,7 @@ void MicriCasinoGame::drawHub(Canvas& canvas) {
   canvas.drawString("Reset", 157, 87);
   canvas.setTextSize(1);
   canvas.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-  canvas.drawString("Top " + money(logic_.bestBankroll()), 12, 113);
+  canvas.drawString("Cashout " + money(logic_.bestCashout()), 12, 113);
 }
 
 template <typename Canvas>
@@ -311,7 +340,18 @@ void MicriCasinoGame::drawBlackjack(Canvas& canvas) {
     canvas.setTextColor(TFT_YELLOW, TFT_BLACK);
     canvas.drawString(String(logic_.blackjackPlayerValue()), 215, 81);
   }
-  TDisplayUi::footer(canvas, logic_.blackjackFooterText());
+  if (logic_.screen() == Casino::Screen::BlackjackResult) {
+    canvas.setTextSize(1);
+    const bool won = logic_.outcome() == Casino::Outcome::Win ||
+                     logic_.outcome() == Casino::Outcome::Blackjack;
+    const uint16_t color = won ? TFT_GREEN
+                               : (logic_.outcome() == Casino::Outcome::Push ? TFT_YELLOW : TFT_RED);
+    canvas.setTextColor(color, TFT_BLACK);
+    canvas.drawString(String("RESULT: ") + Casino::blackjackResultName(logic_.outcome()), 10, 107);
+    TDisplayUi::footer(canvas, "B1 again  B2 casino");
+  } else {
+    TDisplayUi::footer(canvas, logic_.blackjackFooterText());
+  }
 }
 
 template <typename Canvas>
@@ -410,9 +450,9 @@ template <typename Canvas>
 void MicriCasinoGame::drawHoldem(Canvas& canvas) {
   drawShell(canvas, "Holdem");
   if (logic_.screen() == Casino::Screen::HoldemBet) {
-    TDisplayUi::largeValue(canvas, "Bet " + money(logic_.bet()), 42, TFT_GOLD);
-    TDisplayUi::centered(canvas, "Texas Hold'em", 91, 2, TFT_WHITE);
-    TDisplayUi::footer(canvas, "B1 stake  Hold deal  B2 hub");
+    TDisplayUi::largeValue(canvas, "Blind " + money(logic_.bet()), 42, TFT_GOLD);
+    TDisplayUi::centered(canvas, "Table max " + money(logic_.bet() * 10), 91, 2, TFT_WHITE);
+    TDisplayUi::footer(canvas, "B1 blind  Hold join  B2 hub");
     return;
   }
   canvas.fillRect(0, 29, width, height - TDisplayUi::FOOTER_H - 29, TFT_DARKGREEN);
@@ -431,20 +471,30 @@ void MicriCasinoGame::drawHoldem(Canvas& canvas) {
   }
   canvas.setTextSize(1);
   canvas.setTextColor(TFT_WHITE, TFT_DARKGREEN);
-  canvas.drawString("Dealer", 12, 90);
-  const bool hideDealer = logic_.screen() == Casino::Screen::HoldemAction;
-  drawCard(canvas, 60, 83, logic_.holdemDealer()[0], hideDealer);
-  drawCard(canvas, 90, 83, logic_.holdemDealer()[1], hideDealer);
+  const uint8_t winnerSeat = logic_.holdemWinnerSeat();
+  const bool showWinner = logic_.screen() == Casino::Screen::HoldemResult &&
+                          winnerSeat > 0 && winnerSeat < Casino::Logic::HOLDEM_SEATS;
+  canvas.drawString(showWinner ? logic_.holdemSeatName(winnerSeat) : "Table", 12, 90);
+  if (showWinner) {
+    drawCard(canvas, 60, 83, logic_.holdemSeatCards(winnerSeat)[0]);
+    drawCard(canvas, 90, 83, logic_.holdemSeatCards(winnerSeat)[1]);
+  }
   canvas.setTextSize(1);
   canvas.setTextColor(TFT_GOLD, TFT_DARKGREEN);
   canvas.drawString("Pot " + money(logic_.pot()), 150, 90);
   if (logic_.screen() == Casino::Screen::HoldemAction) {
-    TDisplayUi::pill(canvas, 150, 99, Casino::holdemActionName(logic_.holdemAction()), TFT_GREEN);
+    TDisplayUi::pill(canvas, 150, 99,
+                     logic_.holdemActor() == 0
+                         ? Casino::holdemActionName(logic_.holdemAction())
+                         : logic_.holdemMessage(),
+                     logic_.holdemActor() == 0 ? TFT_GREEN : TFT_YELLOW);
   } else {
     TDisplayUi::pill(canvas, 150, 88, Casino::outcomeName(logic_.outcome()), logic_.lastWin() > 0 ? TFT_GREEN : TFT_RED);
     canvas.setTextSize(1);
     canvas.setTextColor(TFT_WHITE, TFT_DARKGREEN);
-    const char* winner = logic_.outcome() == Casino::Outcome::Lose ? "Dealer" : (logic_.outcome() == Casino::Outcome::Win ? "You" : "Push");
+    const char* winner = winnerSeat < Casino::Logic::HOLDEM_SEATS
+                             ? logic_.holdemSeatName(winnerSeat)
+                             : "Table";
     canvas.drawString(String(winner) + ": " + Casino::pokerScoreName(logic_.holdemWinningScore()), 126, 109);
   }
 }
@@ -458,7 +508,7 @@ void MicriCasinoGame::drawVideoPoker(Canvas& canvas) {
     return;
   }
   for (uint8_t i = 0; i < 5; i++) {
-    drawCard(canvas, 12 + i * 43, 43, logic_.videoCards()[i]);
+    drawCard(canvas, 12 + i * 43, 43, logic_.videoDisplayCard(i));
     if (logic_.videoHeld(i)) {
       TDisplayUi::pill(canvas, 14 + i * 43, 78, "HOLD", TFT_GOLD);
     }
@@ -466,7 +516,10 @@ void MicriCasinoGame::drawVideoPoker(Canvas& canvas) {
       canvas.drawRoundRect(9 + i * 43, 40, 31, 37, 4, TFT_GREEN);
     }
   }
-  if (logic_.screen() == Casino::Screen::VideoHold) {
+  if (logic_.videoAnimating()) {
+    TDisplayUi::centered(canvas, logic_.videoDrawing() ? "Drawing..." : "Dealing...",
+                         104, 2, TFT_CYAN);
+  } else if (logic_.screen() == Casino::Screen::VideoHold) {
     if (logic_.videoCursor() == 5) {
       TDisplayUi::pill(canvas, 181, 86, "DRAW", TFT_GREEN);
     }
@@ -474,6 +527,7 @@ void MicriCasinoGame::drawVideoPoker(Canvas& canvas) {
   } else {
     TDisplayUi::centered(canvas, Casino::pokerScoreName(logic_.videoScore()), 86, 2, logic_.lastWin() > 0 ? TFT_GREEN : TFT_RED);
     TDisplayUi::centered(canvas, "Paid " + money(logic_.lastWin()), 112, 1, TFT_GOLD);
+    TDisplayUi::footer(canvas, "B1 deal  Hold bets  B2 casino");
   }
 }
 
@@ -487,8 +541,8 @@ void MicriCasinoGame::drawBroke(Canvas& canvas) {
 template <typename Canvas>
 void MicriCasinoGame::drawCashOut(Canvas& canvas) {
   drawShell(canvas, "Cash Out");
-  TDisplayUi::centered(canvas, "Top Bank Saved", 42, 2, TFT_GOLD);
-  TDisplayUi::largeValue(canvas, money(logic_.bankroll()), 65, TFT_GREEN);
+  TDisplayUi::centered(canvas, "Cashed Out", 42, 2, TFT_GOLD);
+  TDisplayUi::largeValue(canvas, money(logic_.lastCashout()), 65, TFT_GREEN);
   TDisplayUi::centered(canvas, "B1/B2 returns to casino", 108, 1, TFT_LIGHTGREY);
 }
 

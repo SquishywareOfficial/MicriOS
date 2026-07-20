@@ -182,6 +182,8 @@ class ClockLogic {
       face_ = static_cast<Face>(raw == 0 ? FACE_COUNT - 1 : raw - 1);
     }
 
+    void setFace(Face face) { face_ = face; }
+
     Action selectFace() {
       if (face_ == Face::Options) {
         view_ = View::Options;
@@ -198,6 +200,8 @@ class ClockLogic {
       const uint8_t raw = static_cast<uint8_t>(option_);
       option_ = static_cast<Option>(raw == 0 ? OPTION_COUNT - 1 : raw - 1);
     }
+
+    void setOption(Option option) { option_ = option; }
 
     Action activateOption() {
       switch (option_) {
@@ -288,6 +292,12 @@ class ClockLogic {
 
     void previousZone() {
       pickerZoneIndex_ = pickerZoneIndex_ == 0 ? ZONE_COUNT - 1 : pickerZoneIndex_ - 1;
+      savedZoneIndices_[activeZoneSlot_] = pickerZoneIndex_;
+      saveSettings();
+    }
+
+    void setPickerZone(uint8_t index) {
+      pickerZoneIndex_ = index % ZONE_COUNT;
       savedZoneIndices_[activeZoneSlot_] = pickerZoneIndex_;
       saveSettings();
     }

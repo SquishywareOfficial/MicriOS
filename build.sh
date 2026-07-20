@@ -7,6 +7,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 TARGETS=(
   "MicriOS-C3|esp32:esp32:esp32c3:PartitionScheme=huge_app"
   "MicriOS-T-Display|esp32:esp32:esp32:PartitionScheme=huge_app"
+  "MicriOS-CYD|esp32:esp32:esp32:PartitionScheme=huge_app"
   "MicriOS-C3-Headless|esp32:esp32:esp32c3:PartitionScheme=huge_app"
   "MicriOS-S3-Zero-Headless|esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,FlashMode=qio,FlashSize=4M,PartitionScheme=huge_app,PSRAM=enabled,UploadSpeed=921600"
 )
@@ -33,7 +34,7 @@ arduino-cli config init >/dev/null 2>&1 || true
 arduino-cli config set board_manager.additional_urls "$ESP32_BOARD_URL"
 arduino-cli core update-index
 arduino-cli core install esp32:esp32
-arduino-cli lib install U8g2 "NimBLE-Arduino" "TFT_eSPI" ArduinoJson
+arduino-cli lib install U8g2 "NimBLE-Arduino" "TFT_eSPI" ArduinoJson XPT2046_Touchscreen
 
 for target in "${TARGETS[@]}"; do
   IFS='|' read -r sketch fqbn <<< "$target"

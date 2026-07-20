@@ -522,9 +522,8 @@ const Node* CommunicatorApp::nodeAtPath(const uint8_t* path, uint8_t length) con
   return logic_.nodeAtPath(path, length, CATEGORY_ITEMS, CATEGORY_COUNT);
 }
 
-const char* CommunicatorApp::packetLeafLabel(const CommunicatorLogic::MessagePacket& packet) const {
-  const Node* node = nodeAtPath(packet.path, packet.length);
-  return node == nullptr ? "?" : node->label;
+String CommunicatorApp::packetMessageText(const CommunicatorLogic::MessagePacket& packet) const {
+  return logic_.messageText(packet, CATEGORY_ITEMS, CATEGORY_COUNT);
 }
 
 const char* CommunicatorApp::currentTitle() const {
@@ -608,7 +607,8 @@ const char* CommunicatorApp::recipientLabel(uint8_t index) const {
 
 template <typename Canvas>
 void CommunicatorApp::drawRecipient(Canvas& tft) {
-  TDisplayUi::header(tft, "Send To", TFT_CYAN, packetLeafLabel(pendingPacket_));
+  const String message = packetMessageText(pendingPacket_);
+  TDisplayUi::header(tft, "Send To", TFT_CYAN, message.c_str());
   const uint8_t count = contactBook_.count() + 1;
   const uint8_t first = recipientIndex_ >= ROW_COUNT ? recipientIndex_ - ROW_COUNT + 1 : 0;
   for (uint8_t row = 0; row < ROW_COUNT && first + row < count; row++) {
@@ -631,7 +631,7 @@ void CommunicatorApp::drawInbox(Canvas& tft) {
       label = "Back to Send";
     } else {
       auto& inbox = logic_.getInboxItem(item);
-      label = String(inbox.unread ? "* " : "  ") + packetLeafLabel(inbox.packet);
+      label = String(inbox.unread ? "* " : "  ") + packetMessageText(inbox.packet);
     }
     TDisplayUi::row(tft, 34 + row * 22, label.c_str(), item == inboxIndex_, TFT_YELLOW);
   }
@@ -646,7 +646,7 @@ void CommunicatorApp::drawOpenMessage(Canvas& tft) {
     String route = String(inbox.packet.from[0]) + String(inbox.packet.from[1]) + " > " +
                    (CommunicatorLogic::isAllRecipient(inbox.packet.to) ? "ALL" : String(inbox.packet.to[0]) + String(inbox.packet.to[1]));
     TDisplayUi::centered(tft, route, 36, 2, TFT_LIGHTGREY);
-    TDisplayUi::largeValue(tft, packetLeafLabel(inbox.packet), 61, TFT_WHITE);
+    TDisplayUi::largeValue(tft, packetMessageText(inbox.packet), 61, TFT_WHITE);
     String mac;
     for (uint8_t i = 3; i < 6; i++) {
       if (i > 3) mac += ":";

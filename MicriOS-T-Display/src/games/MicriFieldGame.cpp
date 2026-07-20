@@ -16,7 +16,8 @@ constexpr uint8_t EVENT_COUNT = 6;
 constexpr uint16_t EXTRA_LIFE_POINTS = 1000;
 constexpr uint16_t RESULT_LOCK_MS = 650;
 constexpr uint8_t STARTING_ATTEMPT_BANK = 5;
-constexpr uint16_t THROW_ANIM_MS = 1400;
+constexpr uint8_t HURDLE_COUNT = 10;
+constexpr uint16_t RESULT_ANIM_MS = 1700;
 Preferences fieldPrefs;
 
 const char* const EVENT_NAMES[EVENT_COUNT] = {
@@ -133,7 +134,7 @@ void MicriFieldGame::startEventIntro() {
   bestAttemptValue_ = 0;
   qualified_ = false;
   extraLifeEarned_ = false;
-  throwAnimMs_ = 0;
+  resultAnimMs_ = 0;
   throwSignedDistanceCm_ = 0;
   messageTimerMs_ = 0;
   setFieldLed(false);
@@ -155,11 +156,12 @@ void MicriFieldGame::startAttempt() {
       hurdleScrollMs_ = 0;
       hurdleRunnerY_ = 0.0f;
       hurdleVy_ = 0.0f;
-      hurdleX_ = static_cast<float>(width + 8);
+      hurdleX_ = static_cast<float>(width) * 0.82f;
       hurdleSpeed_ = 76.0f + static_cast<float>(round_) * 4.0f;
       hurdleScored_ = false;
       hurdleHit_ = false;
       hurdleJumped_ = false;
+      hurdleJumpAgeMs_ = 0;
       runQuality_ = 0;
       cueElapsedMs_ = 0;
       cueTargetMs_ = max<uint16_t>(360, 540 - round_ * 16);
@@ -231,10 +233,10 @@ void MicriFieldGame::updateRunning(uint32_t deltaMs, const ButtonInput& b1, cons
     return;
   }
 
-  if (state_ == FieldState::ThrowAnim) {
-    throwAnimMs_ += cappedDelta;
+  if (state_ == FieldState::ResultAnim) {
+    resultAnimMs_ += cappedDelta;
     setFieldLed(false);
-    if (throwAnimMs_ >= THROW_ANIM_MS) {
+    if (resultAnimMs_ >= RESULT_ANIM_MS) {
       state_ = FieldState::Result;
       stateTimerMs_ = 0;
     }
@@ -280,6 +282,7 @@ void MicriFieldGame::updateRunning(uint32_t deltaMs, const ButtonInput& b1, cons
     if ((b1.click || b1.pressed) && hurdleRunnerY_ <= 0.1f) {
       hurdleVy_ = 46.0f;
       hurdleJumped_ = true;
+      hurdleJumpAgeMs_ = 0;
     }
 
     hurdleRunnerY_ += hurdleVy_ * dt;
@@ -287,18 +290,25 @@ void MicriFieldGame::updateRunning(uint32_t deltaMs, const ButtonInput& b1, cons
     if (hurdleRunnerY_ < 0.0f) {
       hurdleRunnerY_ = 0.0f;
       hurdleVy_ = 0.0f;
+      hurdleJumpAgeMs_ = 0;
+    } else if (hurdleRunnerY_ > 0.1f) {
+      hurdleJumpAgeMs_ = static_cast<uint16_t>(min<uint32_t>(2000, hurdleJumpAgeMs_ + cappedDelta));
     }
 
-    hurdleX_ -= hurdleSpeed_ * dt;
-    const float runnerX = 18.0f;
+    hurdleX_ -= hurdleSpeed_ * dt * (hurdleRunnerY_ > 0.1f ? 0.82f : 1.0f);
+    const float runnerX = 28.0f;
     if (!hurdleScored_ && hurdleX_ <= runnerX + 2.0f) {
       const bool cleared = hurdleRunnerY_ >= 7.0f;
       if (cleared) {
         hurdlesCleared_++;
-        runQuality_ += min<uint8_t>(100, 62 + static_cast<uint8_t>(hurdleRunnerY_ * 3.0f));
+        const int heightError = absInt(static_cast<int>(hurdleRunnerY_ - 11.0f));
+        const int earlyPenalty = hurdleJumpAgeMs_ > 520
+                                     ? min<int>(45, (hurdleJumpAgeMs_ - 520) / 8)
+                                     : 0;
+        runQuality_ += static_cast<uint8_t>(max<int>(20, 100 - heightError * 5 - earlyPenalty));
         hurdleHit_ = false;
       } else {
-        runQuality_ += 10;
+        runQuality_ += 8;
         hurdleHit_ = true;
       }
       hurdleIndex_++;
@@ -306,18 +316,20 @@ void MicriFieldGame::updateRunning(uint32_t deltaMs, const ButtonInput& b1, cons
     }
 
     if (hurdleX_ < -12.0f) {
-      if (hurdleIndex_ >= 8) {
-        const uint8_t avg = runQuality_ / 8;
-        const uint16_t timeMs = 17200 - static_cast<uint16_t>(hurdlesCleared_) * 520 -
+      if (hurdleIndex_ >= HURDLE_COUNT) {
+        const uint8_t avg = runQuality_ / HURDLE_COUNT;
+        const uint16_t timeMs = 19000 - static_cast<uint16_t>(hurdlesCleared_) * 430 -
                                 static_cast<uint16_t>(avg) * 12 - static_cast<uint16_t>(round_) * 80;
-        const bool qualified = hurdlesCleared_ >= 6 && timeMs <= qualifyingTarget();
-        const uint16_t score = qualified ? static_cast<uint16_t>(80 + hurdlesCleared_ * 12 + max<int>(0, qualifyingTarget() - timeMs) / 35 + avg / 2) : avg / 3;
+        const bool qualified = hurdlesCleared_ >= 8 && timeMs <= qualifyingTarget();
+        const uint16_t score = qualified ? static_cast<uint16_t>(80 + hurdlesCleared_ * 10 + max<int>(0, qualifyingTarget() - timeMs) / 35 + avg / 2) : avg / 3;
         finishAttempt(qualified, score, timeMs, ResultUnit::Time);
       } else {
-        hurdleX_ = static_cast<float>(width + random(8, 24));
+        hurdleX_ = static_cast<float>(width) * 0.72f +
+                   static_cast<float>(random(0, max<int>(2, width / 12)));
         hurdleSpeed_ += 0.8f;
         hurdleScored_ = false;
         hurdleHit_ = false;
+        hurdleJumpAgeMs_ = 0;
       }
     }
     return;
@@ -475,9 +487,9 @@ void MicriFieldGame::finishAttempt(bool qualified, uint16_t eventScore, uint16_t
   bestAttemptScore_ = max(bestAttemptScore_, eventScore);
   bestAttemptValue_ = max(bestAttemptValue_, value);
   extraLifeEarned_ = false;
-  state_ = (eventIndex_ == 3) ? FieldState::ThrowAnim : FieldState::Result;
+  state_ = eventIndex_ == 1 ? FieldState::Result : FieldState::ResultAnim;
   stateTimerMs_ = 0;
-  throwAnimMs_ = 0;
+  resultAnimMs_ = 0;
   setFieldLed(false);
 
   if (qualified) {
@@ -661,8 +673,8 @@ void MicriFieldGame::drawRunning(TFT_eSPI& tft) {
       case FieldState::HighJumpHold:
         drawHighJumpHold(canvas);
         break;
-      case FieldState::ThrowAnim:
-        drawThrowAnim(canvas);
+      case FieldState::ResultAnim:
+        drawResultAnim(canvas);
         break;
       case FieldState::Result:
         drawResult(canvas);
@@ -709,8 +721,9 @@ void MicriFieldGame::drawEnd(TFT_eSPI& tft) {
 
 template <typename Canvas>
 void MicriFieldGame::drawScoreHeader(Canvas& tft) {
-  const String stat = "R" + String(round_) + " A" + String(attemptsRemaining_) + " S" + String(totalScore_);
-  TDisplayUi::header(tft, eventName(eventIndex_), TFT_ORANGE, stat.c_str());
+  const String title = String(eventName(eventIndex_)) + " R" + String(round_);
+  const String target = "Q " + formatEventValue(eventIndex_, qualifyingTarget());
+  TDisplayUi::header(tft, title.c_str(), TFT_ORANGE, target.c_str());
 }
 
 template <typename Canvas>
@@ -762,7 +775,11 @@ void MicriFieldGame::drawHurdles(Canvas& tft) {
     TDisplayUi::centered(tft, "TAP JUMP", 42, 2, TFT_YELLOW);
   }
 
-  const String hurdleFooter = "H" + String(hurdleIndex_ + 1) + "/8  Cleared " + String(hurdlesCleared_);
+  const uint8_t shownHurdle = min<uint8_t>(HURDLE_COUNT,
+      hurdleIndex_ + (hurdleScored_ ? 0 : 1));
+  const String hurdleFooter = "H" + String(shownHurdle) + "/" +
+                              String(HURDLE_COUNT) + "  Cleared " +
+                              String(hurdlesCleared_);
   TDisplayUi::footer(tft, hurdleFooter.c_str());
 }
 
@@ -820,39 +837,120 @@ void MicriFieldGame::drawHighJumpHold(Canvas& tft) {
 }
 
 template <typename Canvas>
-void MicriFieldGame::drawThrowAnim(Canvas& tft) {
-  TDisplayUi::header(tft, "Hammer", TFT_ORANGE);
-
-  const int originX = 42;
+void MicriFieldGame::drawResultAnim(Canvas& tft) {
+  const float progress = min(1.0f, static_cast<float>(resultAnimMs_) /
+                                       static_cast<float>(RESULT_ANIM_MS));
+  const uint8_t gait = static_cast<uint8_t>((resultAnimMs_ / 90) & 1U);
   const int groundY = 110;
-  tft.drawFastHLine(0, groundY, width, TFT_DARKGREEN);
-  drawStick(tft, originX - 5, groundY, false);
+  const String target = "Q " + formatEventValue(eventIndex_, qualifyingTarget());
+  TDisplayUi::header(tft, eventName(eventIndex_), TFT_ORANGE, target.c_str());
 
-  const float progress = min(1.0f, static_cast<float>(throwAnimMs_) / static_cast<float>(THROW_ANIM_MS));
-  const float distanceM = static_cast<float>(throwSignedDistanceCm_) / 100.0f;
-  const int travelPx = constrain(static_cast<int>(distanceM * 3.0f), -42, 160);
-  const int ballX = originX + static_cast<int>(static_cast<float>(travelPx) * progress);
-  const int arc = static_cast<int>(sinf(progress * 3.14159f) * 45.0f);
-  const int ballY = groundY - 2 - arc;
-  tft.fillCircle(ballX, ballY, 5, TFT_LIGHTGREY);
-  tft.drawLine(originX, groundY - 16, ballX, ballY, TFT_LIGHTGREY);
-
-  tft.setTextSize(2);
-  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-  tft.setCursor(150, 52);
-  if (throwSignedDistanceCm_ < 0) {
-    tft.print("-");
+  if (eventIndex_ == 0) {
+    const int finishX = 222;
+    const int laneGround[3] = {57, 84, 111};
+    for (uint8_t lane = 0; lane < 3; ++lane) {
+      tft.drawFastHLine(0, laneGround[lane] + 1, width, TFT_DARKGREY);
+    }
+    for (int y = 29; y < groundY; y += 8) {
+      tft.fillRect(finishX, y, 3, 4, ((y / 4) & 1) ? TFT_WHITE : TFT_DARKGREY);
+    }
+    const float playerPace = clampFloat(
+        static_cast<float>(qualifyingTarget()) / max<uint16_t>(1, resultValue_),
+        0.72f, 1.10f);
+    const float pace[3] = {0.92f, playerPace, 1.01f};
+    const uint16_t colors[3] = {TFT_CYAN, TFT_GREEN, TFT_MAGENTA};
+    for (uint8_t lane = 0; lane < 3; ++lane) {
+      const int runnerX = 14 + static_cast<int>(208.0f * min(1.0f, progress * pace[lane]));
+      drawStick(tft, runnerX, laneGround[lane], false, colors[lane], gait + lane);
+    }
+    TDisplayUi::footer(tft, ("You " + formatEventValue(0, resultValue_)).c_str());
+    return;
   }
-  tft.print(absInt(throwSignedDistanceCm_) / 100);
-  tft.print(".");
-  tft.print((absInt(throwSignedDistanceCm_) / 10) % 10);
-  tft.print("m");
-  TDisplayUi::footer(tft, "Throw distance");
+
+  tft.drawFastHLine(0, groundY, width, TFT_DARKGREEN);
+
+  if (eventIndex_ == 2) {
+    const int takeoffX = 86;
+    const float ratio = clampFloat(static_cast<float>(resultValue_) /
+                                       static_cast<float>(qualifyingTarget()),
+                                   0.55f, 1.35f);
+    const int landingX = min<int>(229, takeoffX + static_cast<int>(96.0f * ratio));
+    tft.fillRect(takeoffX, groundY - 4, 4, 6, TFT_WHITE);
+    tft.fillRect(takeoffX + 6, groundY + 1, width - takeoffX - 12, 5, TFT_YELLOW);
+    const float runP = min(1.0f, progress / 0.28f);
+    const float flightP = progress <= 0.28f ? 0.0f : (progress - 0.28f) / 0.72f;
+    const int athleteX = progress <= 0.28f
+                             ? 20 + static_cast<int>((takeoffX - 20) * runP)
+                             : takeoffX + static_cast<int>((landingX - takeoffX) * flightP);
+    const int lift = progress <= 0.28f ? 0 : static_cast<int>(sinf(flightP * PI) * 38.0f);
+    drawStick(tft, athleteX, groundY - lift, lift > 2, TFT_GREEN, gait);
+    tft.drawFastVLine(landingX, groundY - 8, 8, TFT_CYAN);
+    TDisplayUi::footer(tft, ("Dist " + formatEventValue(2, resultValue_)).c_str());
+    return;
+  }
+
+  if (eventIndex_ == 3) {
+    const int originX = 42;
+    drawStick(tft, originX - 5, groundY, false, TFT_ORANGE, gait);
+    const float distanceM = static_cast<float>(throwSignedDistanceCm_) / 100.0f;
+    const int travelPx = constrain(static_cast<int>(distanceM * 3.0f), -42, 190);
+    const int ballX = originX + static_cast<int>(static_cast<float>(travelPx) * progress);
+    const int ballY = groundY - 2 - static_cast<int>(sinf(progress * PI) * 45.0f);
+    const float dx = static_cast<float>(ballX - originX);
+    const float dy = static_cast<float>(ballY - (groundY - 16));
+    const float length = sqrtf(dx * dx + dy * dy);
+    const float tether = min(18.0f, length);
+    const int tailX = length > 0.1f ? ballX - static_cast<int>(dx / length * tether) : originX;
+    const int tailY = length > 0.1f ? ballY - static_cast<int>(dy / length * tether) : groundY - 16;
+    tft.drawLine(tailX, tailY, ballX, ballY, TFT_LIGHTGREY);
+    tft.fillCircle(ballX, ballY, 4, TFT_LIGHTGREY);
+    TDisplayUi::footer(tft, ("Dist " +
+        String(throwSignedDistanceCm_ < 0 ? "-" : "") +
+        formatEventValue(3, static_cast<uint16_t>(absInt(throwSignedDistanceCm_)))).c_str());
+    return;
+  }
+
+  if (eventIndex_ == 4) {
+    const int originX = 42;
+    drawStick(tft, originX - 6, groundY, false, TFT_CYAN, gait);
+    const float ratio = clampFloat(static_cast<float>(resultValue_) /
+                                       static_cast<float>(qualifyingTarget()),
+                                   0.55f, 1.35f);
+    const int travel = static_cast<int>(180.0f * min(1.0f, ratio));
+    const int spearX = originX + static_cast<int>(travel * progress);
+    const int spearY = groundY - 18 - static_cast<int>(sinf(progress * PI) * 44.0f);
+    tft.drawLine(spearX - 22, spearY + 5, spearX + 6, spearY - 2, TFT_YELLOW);
+    tft.fillTriangle(spearX + 6, spearY - 2, spearX, spearY - 4,
+                     spearX + 1, spearY + 1, TFT_WHITE);
+    TDisplayUi::footer(tft, ("Dist " + formatEventValue(4, resultValue_)).c_str());
+    return;
+  }
+
+  const int leftPost = 125;
+  const int rightPost = 171;
+  const int barY = 58;
+  const bool barFallen = !qualified_ && progress > 0.68f;
+  tft.drawFastVLine(leftPost, barY, groundY - barY, TFT_LIGHTGREY);
+  tft.drawFastVLine(rightPost, barY, groundY - barY, TFT_LIGHTGREY);
+  if (barFallen) {
+    tft.drawLine(leftPost, barY + 3, rightPost, groundY - 6, TFT_RED);
+  } else {
+    tft.drawFastHLine(leftPost, barY, rightPost - leftPost, TFT_YELLOW);
+  }
+  const int athleteX = 32 + static_cast<int>(160.0f * progress);
+  const int peak = qualified_ ? 62 : 42;
+  const int lift = static_cast<int>(sinf(progress * PI) * peak);
+  drawStick(tft, athleteX, groundY - lift, lift > 2,
+            qualified_ ? TFT_GREEN : TFT_RED, gait);
+  TDisplayUi::footer(tft, (String(qualified_ ? "Cleared " : "Missed ") +
+                           formatEventValue(5, resultValue_)).c_str());
 }
 
 template <typename Canvas>
 void MicriFieldGame::drawResult(Canvas& tft) {
-  TDisplayUi::header(tft, qualified_ ? "Qualified" : "No Qual", qualified_ ? TFT_GREEN : TFT_RED);
+  const String target = "Need " + formatEventValue(eventIndex_, qualifyingTarget());
+  TDisplayUi::header(tft, qualified_ ? "Qualified" : "No Qual",
+                     qualified_ ? TFT_GREEN : TFT_RED, target.c_str());
 
   String value;
   if (resultUnit_ == ResultUnit::Time) {
@@ -881,14 +979,19 @@ void MicriFieldGame::drawResult(Canvas& tft) {
 }
 
 template <typename Canvas>
-void MicriFieldGame::drawStick(Canvas& tft, int x, int groundY, bool airborne) {
-  const int y = groundY - 24;
-  tft.drawCircle(x, y - 8, 5, TFT_WHITE);
-  tft.drawLine(x, y - 3, x, y + 14, TFT_WHITE);
-  tft.drawLine(x, y + 5, x + 12, y + (airborne ? 0 : 9), TFT_WHITE);
-  tft.drawLine(x, y + 5, x - 12, y + (airborne ? 2 : 11), TFT_WHITE);
-  tft.drawLine(x, y + 14, x + 12, groundY, TFT_WHITE);
-  tft.drawLine(x, y + 14, x - 9, groundY - (airborne ? 12 : 0), TFT_WHITE);
+void MicriFieldGame::drawStick(Canvas& tft, int x, int groundY, bool airborne,
+                               uint16_t color, uint8_t gait) {
+  const int y = groundY - 20;
+  const int stride = (gait & 1U) ? 8 : -8;
+  tft.fillCircle(x, y - 6, 4, TFT_ORANGE);
+  tft.drawCircle(x, y - 6, 4, TFT_WHITE);
+  tft.fillRoundRect(x - 2, y - 1, 5, 12, 2, color);
+  tft.fillRect(x - 3, y + 9, 7, 4, TFT_BLUE);
+  const int armLift = airborne ? -3 : ((gait & 1U) ? 3 : -1);
+  tft.drawLine(x - 1, y + 2, x + 9, y + armLift, color);
+  tft.drawLine(x + 1, y + 3, x - 8, y + 7 - armLift, color);
+  tft.drawLine(x - 1, y + 12, x + stride, groundY - (airborne ? 7 : 0), TFT_WHITE);
+  tft.drawLine(x + 1, y + 12, x - stride, groundY - (airborne ? 10 : 0), TFT_WHITE);
 }
 
 template <typename Canvas>

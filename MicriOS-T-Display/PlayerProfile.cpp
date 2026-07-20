@@ -14,7 +14,7 @@ uint16_t packInitials(char first, char second) {
 
 namespace PlayerProfile {
 uint16_t defaultInitials() {
-  return packInitials('J', 'F');
+  return packInitials('A', 'A');
 }
 
 uint16_t loadInitials() {

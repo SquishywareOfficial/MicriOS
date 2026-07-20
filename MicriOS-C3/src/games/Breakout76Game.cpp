@@ -129,13 +129,16 @@ void Breakout76Game::updateRunning(uint32_t deltaMs, const ButtonInput& input) {
     b.x += b.vx * dt;
     b.y += b.vy * dt;
 
-    if (b.x <= 1.0f || b.x >= width - 2) {
-      b.x = b.x <= 1.0f ? 1.0f : static_cast<float>(width - 2);
-      b.vx = -b.vx;
+    if (b.x <= 1.0f) {
+      b.x = 1.0f;
+      if (b.vx < 0.0f) b.vx = -b.vx;
+    } else if (b.x >= width - 2) {
+      b.x = static_cast<float>(width - 2);
+      if (b.vx > 0.0f) b.vx = -b.vx;
     }
     if (b.y <= 1.0f) {
       b.y = 1.0f;
-      b.vy = -b.vy;
+      if (b.vy < 0.0f) b.vy = -b.vy;
     }
 
     if (b.y >= PADDLE_Y - 2 && b.y <= PADDLE_Y + 1 && b.x >= paddleX_ && b.x <= paddleX_ + paddleW_ && b.vy > 0) {

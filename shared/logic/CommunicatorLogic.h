@@ -135,6 +135,33 @@ public:
       return node;
     }
 
+    String messageText(const MessagePacket& packet, const DictNode* categories, uint8_t categoryCount) const {
+      if (nodeAtPath(packet.path, packet.length, categories, categoryCount) == nullptr) {
+        return "?";
+      }
+
+      String text;
+      text.reserve(48);
+      const uint8_t firstSegment = packet.length > 1 ? 1 : 0;
+      const DictNode* node = &categories[packet.path[0]];
+      for (uint8_t depth = 0; depth < packet.length; depth++) {
+        if (depth > 0) {
+          node = &node->children[packet.path[depth]];
+        }
+        if (depth < firstSegment || node->label == nullptr || node->label[0] == '\0') {
+          continue;
+        }
+
+        if (!text.isEmpty()) text += ' ';
+        String segment(node->label);
+        if (segment[0] >= 'a' && segment[0] <= 'z') {
+          segment.setCharAt(0, static_cast<char>(segment[0] - 'a' + 'A'));
+        }
+        text += segment;
+      }
+      return text.isEmpty() ? String("?") : text;
+    }
+
     void pushInbox(const MessagePacket& packet, const uint8_t* from) {
       if (inboxCount_ < INBOX_SIZE) inboxCount_++;
       for (int8_t i = inboxCount_ - 1; i > 0; i--) inbox_[i] = inbox_[i - 1];

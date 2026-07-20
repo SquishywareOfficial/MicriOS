@@ -4,6 +4,7 @@ $Esp32BoardUrl = "https://raw.githubusercontent.com/espressif/arduino-esp32/gh-p
 $Targets = @(
   @{ Sketch = "MicriOS-C3"; Fqbn = "esp32:esp32:esp32c3:PartitionScheme=huge_app" },
   @{ Sketch = "MicriOS-T-Display"; Fqbn = "esp32:esp32:esp32:PartitionScheme=huge_app" },
+  @{ Sketch = "MicriOS-CYD"; Fqbn = "esp32:esp32:esp32:PartitionScheme=huge_app" },
   @{ Sketch = "MicriOS-C3-Headless"; Fqbn = "esp32:esp32:esp32c3:PartitionScheme=huge_app" },
   @{ Sketch = "MicriOS-S3-Zero-Headless"; Fqbn = "esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,FlashMode=qio,FlashSize=4M,PartitionScheme=huge_app,PSRAM=enabled,UploadSpeed=921600" }
 )
@@ -65,7 +66,7 @@ if ($configInitExit -ne 0) {
 Invoke-ArduinoCli config set board_manager.additional_urls $Esp32BoardUrl
 Invoke-ArduinoCli core update-index
 Invoke-ArduinoCli core install esp32:esp32
-Invoke-ArduinoCli lib install U8g2 NimBLE-Arduino TFT_eSPI ArduinoJson
+Invoke-ArduinoCli lib install U8g2 NimBLE-Arduino TFT_eSPI ArduinoJson XPT2046_Touchscreen
 
 foreach ($target in $Targets) {
   Sync-SharedCode -Sketch $target.Sketch
