@@ -62,6 +62,7 @@ private:
     Work,
     Debug,
     Role,
+    Display,
     Clear,
     Exit,
     Count
@@ -72,8 +73,10 @@ private:
   void loadDisplayPreference();
   void saveDisplayPreference();
   void saveRolePreference();
+  void setMasterRunning(bool running);
   void switchRole(Role role);
   void toggleDisplayOrientation();
+  void advanceSlaveDetail();
   void markDirty();
   void forceClear();
   void printStatsLine(const MinerCluster::MasterStats& stats, const char* reason);
@@ -107,6 +110,8 @@ private:
   template <typename Canvas>
   void drawSlaveDebug(Canvas& canvas, const MinerCluster::SlaveStats& stats);
   template <typename Canvas>
+  void drawSlaveDisplay(Canvas& canvas, const MinerCluster::SlaveStats& stats);
+  template <typename Canvas>
   void drawSlaveClear(Canvas& canvas, const MinerCluster::SlaveStats& stats);
   template <typename Canvas>
   void drawSlaveExit(Canvas& canvas, const MinerCluster::SlaveStats& stats);
@@ -127,4 +132,6 @@ private:
   uint32_t lastSerialStatsMs_ = 0;
   bool displayPreferenceLoaded_ = false;
   bool portraitMode_ = false;
+  bool masterShouldRun_ = true;
+  uint8_t slaveDetailIndex_ = 0;
 };

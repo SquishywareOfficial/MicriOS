@@ -53,6 +53,13 @@ session ID so delayed packets from a previous run cannot revive stale work.
 ESP-NOW receive callbacks only copy packets into a queue; parsing, Preferences,
 and assignment state changes run in the owning miner task.
 
+Slave status and completed-work packets also report the chip's approximate die
+temperature when the target supports it. Temperature reuses protocol-v3
+reserved bytes, so packet sizes remain unchanged and older v3 nodes continue to
+work. Invalid sensor samples use an explicit unavailable sentinel rather than
+zero: the master shows `--` until the first valid reading, then retains the last
+valid temperature if a later sensor read temporarily fails.
+
 Pairing uses the master's MAC address plus a persisted cluster ID. Resetting the cluster ID forces slaves to pair again.
 
 ## Supported Roles
@@ -63,9 +70,11 @@ Open **Distributed Miner** to go directly to its saved **Master** or **Slave**
 dashboard. The role is remembered across app exits and device restarts. Use the
 **Miner Role** page to switch roles; the new choice is saved immediately.
 
-Entering the saved Master dashboard does not automatically start the cluster.
-Start/stop remains an explicit action. Entering the Slave dashboard starts its
-ESP-NOW listener so it can reconnect to its saved master and accept work.
+The Master dashboard remembers whether the cluster was explicitly started or
+stopped. A running master resumes automatically when the app is launched after
+a reboot or brief power interruption; explicitly stopping it saves the stopped
+state. Entering the Slave dashboard starts its ESP-NOW listener so it can
+reconnect to its saved master and accept work.
 
 T-Display can act as:
 
@@ -73,6 +82,11 @@ T-Display can act as:
 - slave
 - master with local mining enabled
 - master with local mining disabled
+
+In Slave mode, classic dual-core ESP32 T-Displays run the same two-worker
+arrangement used by standalone Micri Miner: a hardware-SHA worker plus a
+baked-software helper on the other available CPU time. Fast T-Display slaves
+also advertise longer prefetched assignments to reduce radio handoff overhead.
 
 ### ESP32-C3 OLED
 
@@ -136,6 +150,10 @@ slave records for devices that are no longer present.
 ## T-Display Master Controls
 
 - **Dashboard**: Button 1 starts/stops the cluster. Button 2 changes page.
+- **Cluster Slaves**: the overview shows each active node's MAC suffix, rounded
+  integer hashrate, and die temperature. Button 1 cycles through a detail page
+  for every active slave, then returns to the overview. Button 2 continues to
+  the next main page.
 - **Pair Slaves**: Button 1 starts pairing.
 - **Cluster Control**: Button 1 toggles local mining. Button 1 hold starts/stops the cluster.
 - **Miner Role**: Button 1 switches to Slave mode and saves the choice.
@@ -149,6 +167,8 @@ slave records for devices that are no longer present.
 
 - Button 2 changes status/detail pages.
 - **Miner Role**: Button 1 switches to Master mode and saves the choice.
+- **Display Layout**: Button 1 switches between the normal `240x135` landscape
+  slave pages and the saved `135x240` portrait pages for upright USB-hub use.
 - **Clear Pairing**: Button 1 hold forgets the saved master.
 - **Exit Slave**: Button 1 hold exits to the MicriOS menu.
 - Button 2 hold also exits to the menu.
@@ -160,8 +180,9 @@ different data:
 
 - **Cluster** clears the master cluster ID/local-mining choice or, when the
   device has acted as a slave, its saved master MAC and cluster ID.
-- **Cluster App** clears the T-Display app's saved Master/Slave role and display
-  orientation. The next launch defaults to Master in landscape.
+- **Cluster App** clears the T-Display app's saved Master/Slave role, display
+  orientation, and master run intent. The next launch defaults to Master in
+  landscape with automatic cluster resume enabled.
 
 Clearing **All** clears both namespaces. Clearing state on the master does not
 erase pairing stored on slave devices; reset or clear those slaves as well when
@@ -222,14 +243,30 @@ cluster local off
 submitted/accepted/rejected shares, channel, master RX queue drops, assignment
 delivery retries, free heap, task stack watermark, and the last error.
 
-When the T-Display runs as a slave, its two-second serial line reports raw and
-effective hashrate, assignment progress, RX queue drops, result retries, idle
-time, free heap, and worker stack watermark.
+The master's per-slave detail pages combine data reported by the node with
+master-side delivery bookkeeping. Reported data includes raw/effective
+hashrate, device uptime, current CPU frequency, latest job, capability flags,
+last error, best difficulty, and die temperature. Device uptime is measured
+from board boot, rather than from the most recent Distributed Miner engine
+start. The master additionally tracks last-seen age, active and queued nonce
+ranges, assignment acknowledgements, and retry counts. An assignment ACK means
+the slave confirmed receipt of the current work range; its attempt count is how
+many times the master sent that assignment. Queue state refers to the prefetched
+next work range and its corresponding send attempts. These delivery details are
+kept for diagnostics but are no longer shown as cryptic `ACK yes/1` and
+`Queue no/1` labels on the normal detail page. Partial
+nonce progress is not transmitted continuously; this deliberately avoids
+adding high-frequency radio traffic to the mining loop.
+
+The T-Display slave dashboard reports raw/effective hashrate, assignment
+progress, queue drops, result retries, idle time, heap, and both worker stack
+watermarks. Periodic app-level Serial output is disabled by default so it does
+not perturb performance measurements.
 
 Headless C3 and S3-Zero serial also run at `115200` baud and print status every two seconds. The S3 line includes raw/effective rate, SHA mode, assignment progress, queue drops, result retries, idle time, heap, worker stack watermarks, and temperature:
 
 ```text
-[s3zero] build=<build> state=<state> paired=<yes/no> ch=<n> raw_khps=<rate> effective_khps=<rate> sha=<mode> assign=<id> progress=<done>/<size> rx_drop=<n> result_retry=<n> idle_ms=<n> led=<on/off>
+[s3zero] build=<build> state=<state> paired=<yes/no> ch=<n> raw_khps=<rate> effective_khps=<rate> sha=<mode> assign=<id> progress=<done>/<size> rx_drop=<n> result_retry=<n> idle_ms=<n> temp_c=<temp> cpu_mhz=<mhz> led=<on/off>
 ```
 
 ## Clearing Saved Cluster Data
@@ -242,7 +279,14 @@ On headless C3 or S3-Zero, triple-tap while Slave Miner is running.
 
 ## Performance Notes
 
-- T-Display/classic ESP32 slaves use the ESP32 hardware SHA path.
+- T-Display/classic ESP32 slaves use the ESP32 hardware SHA path plus a
+  secondary baked-software worker. The two workers claim separate nonce chunks
+  from the same assignment; only the hardware worker owns the single SHA
+  peripheral.
+- T-Display slaves use 8,192-nonce worker chunks and advertise the same
+  12-second fast-assignment target and queued prefetch support used for other
+  fast nodes. Their screen refresh is deliberately slower in Slave mode so the
+  dashboard does not consume avoidable CPU/SPI time.
 - ESP32-C3 slaves use the C3-compatible path and are much slower than T-Display/classic ESP32 boards.
 - ESP32-S3-Zero slaves use a dedicated register-level S3 hardware SHA path,
   larger batches, queued next-assignment prefetch, and effective-hashrate
@@ -265,6 +309,11 @@ On headless C3 or S3-Zero, triple-tap while Slave Miner is running.
   idle/watchdog, serial, LED, and BOOT handling remain serviceable.
 - Protocol-v3 masters and slaves must be upgraded together. Older cluster
   protocol builds intentionally reject the new packet layout.
+- CPU frequency uses capability-gated reserved bytes in the existing Hello and
+  Status packets, so their packed sizes and protocol version remain unchanged.
+  Hello carries the value every few seconds even while a slave is continuously
+  mining. A steady `240 MHz` with falling hashrate points away from CPU clock
+  scaling and toward workload, radio, power, or thermal effects elsewhere.
 
 ## Troubleshooting
 

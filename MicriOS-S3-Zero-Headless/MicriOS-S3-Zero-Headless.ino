@@ -343,6 +343,8 @@ void printStats(uint32_t nowMs) {
   Serial.print(static_cast<unsigned long>(stats.totalHashes / 1000ULL));
   Serial.print(" temp_c=");
   Serial.print(temperatureRead(), 1);
+  Serial.print(" cpu_mhz=");
+  Serial.print(MinerCluster::localCpuFrequencyMhz());
   Serial.print(" led=");
   Serial.print(ledEnabled ? "on" : "off");
   if (stats.lastError[0]) {

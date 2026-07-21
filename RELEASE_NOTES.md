@@ -29,12 +29,40 @@
 - Added local miner diagnostics for queue drops, delivery/result retries,
   paired idle time, assignment progress, heap, worker stack watermarks, and S3
   temperature without enlarging the ESP-NOW protocol packets.
+- Added slave die-temperature reporting to the master by reusing reserved
+  protocol-v3 bytes, keeping status and result packet sizes unchanged. The
+  T-Display Cluster Slaves overview now uses compact integer hashrates plus
+  temperature, while B1 cycles through detailed diagnostics for every slave.
+- Prevented failed/NaN slave temperature samples from appearing as `0 C` or
+  overwriting a valid reading; unavailable samples now use an explicit sentinel
+  and the master retains each node's last valid temperature.
+- Fixed periodic temperature-capable `SlaveHello` packets, which do not carry a
+  temperature field, incorrectly replacing a slave's valid cached reading with
+  zero on the master.
+- Added slave CPU-frequency telemetry using capability-gated reserved bytes in
+  the existing Hello and Status packets, preserving packet sizes and protocol
+  version while allowing the master to distinguish clock changes from other
+  hashrate losses.
+- Reworked T-Display slave detail pages to show CPU frequency and true
+  device-since-boot uptime, and removed the cryptic ACK/queue send counters from
+  the everyday dashboard while retaining them internally for diagnostics.
 - Added a saved T-Display Distributed Miner portrait dashboard for upright
   USB-down cluster masters, including all eight slave rows, while keeping the
   rest of MicriOS landscape.
+- Extended the saved portrait layout to T-Display slave pages, including a
+  slave-accessible Display page for upright USB-hub nodes.
+- Added a second baked-software worker to classic ESP32/T-Display cluster
+  slaves alongside their hardware-SHA worker, matching the proven standalone
+  miner architecture while keeping nonce ranges disjoint.
+- Gave fast classic ESP32 slaves 8,192-nonce chunks, 12-second adaptive work
+  assignments, queued prefetch, and a lower dashboard refresh rate to reduce
+  cluster and display overhead.
 - Made the T-Display Distributed Miner remember its Master/Slave role and open
   directly on that role's dashboard; added an in-app Role page and a separate
   `Cluster App` Save Manager entry for clearing role/orientation preferences.
+- Persisted the T-Display master's explicit Start/Stop intent so an autolaunched
+  master resumes the cluster, pool connection, and slave work after power loss;
+  explicitly stopping it keeps future launches stopped.
 - Documented the persistent cluster handshake: masters retain their cluster ID,
   slaves retain the master MAC/cluster ID, and the live master slave list safely
   repopulates after restart instead of restoring stale records.

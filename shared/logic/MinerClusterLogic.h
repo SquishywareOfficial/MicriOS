@@ -9,6 +9,7 @@
 #include <esp_wifi.h>
 #include <freertos/queue.h>
 #include <mbedtls/sha256.h>
+#include <soc/soc_caps.h>
 #include <stdarg.h>
 
 #include "WiFiLogic.h"
@@ -100,15 +101,29 @@ constexpr uint16_t SLAVE_BATCH_NONCES = MICRI_CLUSTER_SLAVE_BATCH_NONCES;
 #define MICRI_CLUSTER_SLAVE_TASK_PRIORITY 2
 #endif
 
+#ifndef MICRI_CLUSTER_SECONDARY_TASK_PRIORITY
+#define MICRI_CLUSTER_SECONDARY_TASK_PRIORITY MICRI_CLUSTER_SLAVE_TASK_PRIORITY
+#endif
+
 #ifndef MICRI_CLUSTER_S3_SOFTWARE_WORKER
 #define MICRI_CLUSTER_S3_SOFTWARE_WORKER 1
+#endif
+
+#ifndef MICRI_CLUSTER_SECONDARY_SOFTWARE_WORKER
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+#define MICRI_CLUSTER_SECONDARY_SOFTWARE_WORKER MICRI_CLUSTER_S3_SOFTWARE_WORKER
+#elif defined(CONFIG_IDF_TARGET_ESP32)
+#define MICRI_CLUSTER_SECONDARY_SOFTWARE_WORKER 1
+#else
+#define MICRI_CLUSTER_SECONDARY_SOFTWARE_WORKER 0
+#endif
 #endif
 
 #ifndef MICRI_CLUSTER_DEFAULT_LOCAL_MINING
 #define MICRI_CLUSTER_DEFAULT_LOCAL_MINING 1
 #endif
 
-#if defined(CONFIG_IDF_TARGET_ESP32S3) && MICRI_CLUSTER_SLAVE_TASK_ENABLED
+#if (defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)) && MICRI_CLUSTER_SLAVE_TASK_ENABLED
 #define MICRI_CLUSTER_DUAL_SLAVE_WORKER 1
 #else
 #define MICRI_CLUSTER_DUAL_SLAVE_WORKER 0
@@ -119,21 +134,48 @@ enum SlaveCapability : uint8_t {
   SlaveCapFastAssignment = 1 << 1,
   SlaveCapDualWorker = 1 << 2,
   SlaveCapHardwareSha = 1 << 3,
+  SlaveCapTemperature = 1 << 4,
+  SlaveCapCpuFrequency = 1 << 5,
 };
+
+constexpr int16_t TEMPERATURE_UNAVAILABLE = static_cast<int16_t>(-32768);
+constexpr uint8_t CPU_FREQUENCY_UNAVAILABLE = 0;
 
 inline uint8_t localSlaveCapabilities() {
   uint8_t caps = SlaveCapPendingAssignment;
-#if defined(CONFIG_IDF_TARGET_ESP32S3)
+#if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
   caps |= SlaveCapFastAssignment | SlaveCapHardwareSha;
-#if MICRI_CLUSTER_S3_SOFTWARE_WORKER
+#if MICRI_CLUSTER_SECONDARY_SOFTWARE_WORKER
   caps |= SlaveCapDualWorker;
 #endif
 #endif
+#if defined(CONFIG_IDF_TARGET_ESP32) || SOC_TEMP_SENSOR_SUPPORTED
+  caps |= SlaveCapTemperature;
+#endif
+  caps |= SlaveCapCpuFrequency;
   return caps;
 }
 
+inline uint8_t localCpuFrequencyMhz() {
+  const uint32_t frequencyMhz = getCpuFrequencyMhz();
+  if (frequencyMhz == 0) return CPU_FREQUENCY_UNAVAILABLE;
+  return static_cast<uint8_t>(frequencyMhz > UINT8_MAX ? UINT8_MAX : frequencyMhz);
+}
+
+inline int16_t localTemperatureDeciC() {
+#if defined(CONFIG_IDF_TARGET_ESP32) || SOC_TEMP_SENSOR_SUPPORTED
+  const float temperatureC = temperatureRead();
+  if (!isfinite(temperatureC) || temperatureC < -100.0f || temperatureC > 200.0f) {
+    return TEMPERATURE_UNAVAILABLE;
+  }
+  return static_cast<int16_t>(roundf(temperatureC * 10.0f));
+#else
+  return TEMPERATURE_UNAVAILABLE;
+#endif
+}
+
 inline uint32_t localPreferredAssignmentMs() {
-#if defined(CONFIG_IDF_TARGET_ESP32S3)
+#if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
   return FAST_TARGET_ASSIGNMENT_MS;
 #else
   return TARGET_ASSIGNMENT_MS;
@@ -141,7 +183,7 @@ inline uint32_t localPreferredAssignmentMs() {
 }
 
 inline uint32_t localMaxAssignmentRange() {
-#if defined(CONFIG_IDF_TARGET_ESP32S3)
+#if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
   return MAX_FAST_RANGE;
 #else
   return MAX_RANGE;
@@ -225,7 +267,7 @@ struct SlaveHelloPacket {
   uint8_t role;
   uint8_t channel;
   uint8_t capabilities;
-  uint8_t reserved;
+  uint8_t cpuFrequencyMhz;
   uint16_t build;
   uint32_t preferredAssignmentMs;
   uint32_t maxAssignmentRange;
@@ -254,7 +296,7 @@ struct WorkResultPacket {
   float bestDifficulty;
   uint8_t found;
   uint8_t capabilities;
-  uint16_t reserved;
+  int16_t temperatureDeciC;
   uint32_t foundNonce;
   float foundDifficulty;
 } __attribute__((packed));
@@ -270,7 +312,8 @@ struct SlaveStatusPacket {
   uint32_t uptimeSeconds;
   uint32_t lastSeenJobSeq;
   uint8_t capabilities;
-  uint8_t reserved2[3];
+  int16_t temperatureDeciC;
+  uint8_t cpuFrequencyMhz;
   char lastError[32];
 } __attribute__((packed));
 
@@ -305,6 +348,8 @@ struct RxEvent {
 
 static_assert(sizeof(WorkAssignPacket) <= MAX_CLUSTER_PACKET_BYTES, "Work assignment exceeds RX queue packet capacity");
 static_assert(sizeof(WorkResultPacket) <= MAX_CLUSTER_PACKET_BYTES, "Work result exceeds RX queue packet capacity");
+static_assert(sizeof(WorkResultPacket) == 66, "Work result wire size changed");
+static_assert(sizeof(SlaveStatusPacket) == 78, "Slave status wire size changed");
 
 struct Job {
   String jobId;
@@ -370,8 +415,12 @@ struct SlaveRecord {
   uint32_t effectiveHashrate = 0;
   uint32_t preferredAssignmentMs = 0;
   uint32_t maxAssignmentRange = 0;
+  uint32_t uptimeSeconds = 0;
+  int16_t temperatureDeciC = TEMPERATURE_UNAVAILABLE;
+  uint8_t cpuFrequencyMhz = CPU_FREQUENCY_UNAVAILABLE;
   float bestDifficulty = 0.0f;
   char status[32] = "";
+  char lastError[32] = "";
 };
 
 struct MasterStats {
@@ -1162,7 +1211,9 @@ public:
         if (len == static_cast<int>(sizeof(SlaveHelloPacket))) {
           const auto* packet = reinterpret_cast<const SlaveHelloPacket*>(data);
           addOrUpdateSlave(from, "hello", 0, 0, 0.0f, 0, packet->capabilities,
-                           packet->preferredAssignmentMs, packet->maxAssignmentRange);
+                           packet->preferredAssignmentMs, packet->maxAssignmentRange,
+                           TEMPERATURE_UNAVAILABLE, packet->cpuFrequencyMhz,
+                           packet->uptimeSeconds, nullptr);
         }
         break;
       case PacketType::SlaveStatus:
@@ -1170,7 +1221,8 @@ public:
           const auto* packet = reinterpret_cast<const SlaveStatusPacket*>(data);
           addOrUpdateSlave(from, slaveStateLabel(static_cast<SlaveState>(packet->state)),
                            packet->hashrate, packet->effectiveHashrate, 0.0f, packet->lastSeenJobSeq,
-                           packet->capabilities, 0, 0);
+                           packet->capabilities, 0, 0, packet->temperatureDeciC,
+                           packet->cpuFrequencyMhz, packet->uptimeSeconds, packet->lastError);
         }
         break;
       case PacketType::WorkResult:
@@ -1533,7 +1585,9 @@ private:
 
   void addOrUpdateSlave(const uint8_t* mac, const char* status, uint32_t hps, uint32_t effectiveHps,
                         float best, uint32_t jobSeq, uint8_t capabilities,
-                        uint32_t preferredAssignmentMs, uint32_t maxAssignmentRange) {
+                        uint32_t preferredAssignmentMs, uint32_t maxAssignmentRange,
+                        int16_t temperatureDeciC, uint8_t cpuFrequencyMhz,
+                        uint32_t uptimeSeconds, const char* lastError) {
     int8_t index = allocSlave(mac);
     if (index < 0) return;
     SlaveRecord& slave = slaves_[index];
@@ -1544,8 +1598,20 @@ private:
     if (capabilities != 0) slave.capabilities = capabilities;
     if (preferredAssignmentMs != 0) slave.preferredAssignmentMs = preferredAssignmentMs;
     if (maxAssignmentRange != 0) slave.maxAssignmentRange = maxAssignmentRange;
+    if ((capabilities & SlaveCapTemperature) != 0 && temperatureDeciC != TEMPERATURE_UNAVAILABLE) {
+      slave.temperatureDeciC = temperatureDeciC;
+    }
+    if ((capabilities & SlaveCapCpuFrequency) != 0 &&
+        cpuFrequencyMhz != CPU_FREQUENCY_UNAVAILABLE) {
+      slave.cpuFrequencyMhz = cpuFrequencyMhz;
+    }
+    if (uptimeSeconds != 0) slave.uptimeSeconds = uptimeSeconds;
     if (best > slave.bestDifficulty) slave.bestDifficulty = best;
     if (jobSeq > 0) slave.lastJobSeq = jobSeq;
+    if (lastError != nullptr) {
+      strncpy(slave.lastError, lastError, sizeof(slave.lastError) - 1);
+      slave.lastError[sizeof(slave.lastError) - 1] = '\0';
+    }
     if (!(slave.assigned && strcmp(status, "hello") == 0)) {
       strncpy(slave.status, status, sizeof(slave.status) - 1);
       slave.status[sizeof(slave.status) - 1] = '\0';
@@ -1773,6 +1839,10 @@ private:
         slave.effectiveHashrate = static_cast<uint32_t>(packet.hashrate);
       }
       if (packet.capabilities != 0) slave.capabilities = packet.capabilities;
+      if ((packet.capabilities & SlaveCapTemperature) != 0 &&
+          packet.temperatureDeciC != TEMPERATURE_UNAVAILABLE) {
+        slave.temperatureDeciC = packet.temperatureDeciC;
+      }
       slave.lastJobSeq = packet.jobSeq;
       if (packet.bestDifficulty > slave.bestDifficulty) slave.bestDifficulty = packet.bestDifficulty;
       if (packet.found) strncpy(slave.status, "share", sizeof(slave.status) - 1);
@@ -2394,7 +2464,7 @@ private:
     static_cast<SlaveEngine*>(ctx)->runTask();
   }
 
-#if MICRI_CLUSTER_DUAL_SLAVE_WORKER && MICRI_CLUSTER_S3_SOFTWARE_WORKER
+#if MICRI_CLUSTER_DUAL_SLAVE_WORKER && MICRI_CLUSTER_SECONDARY_SOFTWARE_WORKER
   static void secondaryTaskEntry(void* ctx) {
     static_cast<SlaveEngine*>(ctx)->runSecondaryTask();
   }
@@ -2404,12 +2474,19 @@ private:
     if (task_ != nullptr) return true;
     stopRequested_ = false;
 #if MICRI_CLUSTER_DUAL_SLAVE_WORKER
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
     BaseType_t ok = xTaskCreatePinnedToCore(taskEntry, "MicriSlv0", MICRI_CLUSTER_SLAVE_TASK_STACK,
                                             this, MICRI_CLUSTER_SLAVE_TASK_PRIORITY, &task_, 1);
     if (ok != pdPASS) {
       ok = xTaskCreate(taskEntry, "MicriSlv0", MICRI_CLUSTER_SLAVE_TASK_STACK,
                        this, MICRI_CLUSTER_SLAVE_TASK_PRIORITY, &task_);
     }
+#else
+    // Match the proven standalone classic-ESP32 miner: let FreeRTOS place the
+    // hardware worker instead of pinning it against either UI or WiFi.
+    BaseType_t ok = xTaskCreate(taskEntry, "MicriSlvHw", MICRI_CLUSTER_SLAVE_TASK_STACK,
+                                this, MICRI_CLUSTER_SLAVE_TASK_PRIORITY, &task_);
+#endif
 #else
     BaseType_t ok = xTaskCreate(taskEntry, "MicriSlv", MICRI_CLUSTER_SLAVE_TASK_STACK,
                                 this, MICRI_CLUSTER_SLAVE_TASK_PRIORITY, &task_);
@@ -2419,12 +2496,18 @@ private:
       setError("Slave task failed");
       return false;
     }
-#if MICRI_CLUSTER_DUAL_SLAVE_WORKER && MICRI_CLUSTER_S3_SOFTWARE_WORKER
+#if MICRI_CLUSTER_DUAL_SLAVE_WORKER && MICRI_CLUSTER_SECONDARY_SOFTWARE_WORKER
     secondaryStopRequested_ = false;
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
     BaseType_t secondaryOk = xTaskCreatePinnedToCore(secondaryTaskEntry, "MicriSlv1",
                                                      MICRI_CLUSTER_SLAVE_TASK_STACK, this,
-                                                     MICRI_CLUSTER_SLAVE_TASK_PRIORITY,
+                                                     MICRI_CLUSTER_SECONDARY_TASK_PRIORITY,
                                                      &secondaryTask_, 0);
+#else
+    BaseType_t secondaryOk = xTaskCreate(secondaryTaskEntry, "MicriSlvSw",
+                                         MICRI_CLUSTER_SLAVE_TASK_STACK, this,
+                                         MICRI_CLUSTER_SECONDARY_TASK_PRIORITY, &secondaryTask_);
+#endif
     if (secondaryOk != pdPASS) {
       secondaryTask_ = nullptr;
       debugPrintf("[ClusterSlave] secondary worker unavailable\n");
@@ -2435,18 +2518,18 @@ private:
 
   void stopTask() {
     stopRequested_ = true;
-#if MICRI_CLUSTER_DUAL_SLAVE_WORKER && MICRI_CLUSTER_S3_SOFTWARE_WORKER
+#if MICRI_CLUSTER_DUAL_SLAVE_WORKER && MICRI_CLUSTER_SECONDARY_SOFTWARE_WORKER
     secondaryStopRequested_ = true;
 #endif
     const uint32_t started = millis();
     while ((task_ != nullptr
-#if MICRI_CLUSTER_DUAL_SLAVE_WORKER && MICRI_CLUSTER_S3_SOFTWARE_WORKER
+#if MICRI_CLUSTER_DUAL_SLAVE_WORKER && MICRI_CLUSTER_SECONDARY_SOFTWARE_WORKER
             || secondaryTask_ != nullptr
 #endif
             ) && millis() - started < 1000) {
       delay(10);
     }
-#if MICRI_CLUSTER_DUAL_SLAVE_WORKER && MICRI_CLUSTER_S3_SOFTWARE_WORKER
+#if MICRI_CLUSTER_DUAL_SLAVE_WORKER && MICRI_CLUSTER_SECONDARY_SOFTWARE_WORKER
     if (secondaryTask_ != nullptr) {
       vTaskDelete(secondaryTask_);
       secondaryTask_ = nullptr;
@@ -2476,7 +2559,7 @@ private:
     vTaskDelete(nullptr);
   }
 
-#if MICRI_CLUSTER_DUAL_SLAVE_WORKER && MICRI_CLUSTER_S3_SOFTWARE_WORKER
+#if MICRI_CLUSTER_DUAL_SLAVE_WORKER && MICRI_CLUSTER_SECONDARY_SOFTWARE_WORKER
   void runSecondaryTask() {
     uint32_t lastCooperativeDelayAt = millis();
     while (!stopRequested_ && !secondaryStopRequested_) {
@@ -2517,7 +2600,7 @@ private:
 #if MICRI_CLUSTER_SLAVE_TASK_ENABLED
       stackHighWater = uxTaskGetStackHighWaterMark(nullptr);
 #endif
-#if MICRI_CLUSTER_DUAL_SLAVE_WORKER && MICRI_CLUSTER_S3_SOFTWARE_WORKER
+#if MICRI_CLUSTER_DUAL_SLAVE_WORKER && MICRI_CLUSTER_SECONDARY_SOFTWARE_WORKER
       if (secondaryTask_ != nullptr) {
         secondaryHighWater = uxTaskGetStackHighWaterMark(secondaryTask_);
       }
@@ -2689,10 +2772,11 @@ private:
     packet.role = 1;
     packet.channel = channel_;
     packet.capabilities = localSlaveCapabilities();
+    packet.cpuFrequencyMhz = localCpuFrequencyMhz();
     packet.build = 0;
     packet.preferredAssignmentMs = localPreferredAssignmentMs();
     packet.maxAssignmentRange = localMaxAssignmentRange();
-    packet.uptimeSeconds = (millis() - startedAtMs_) / 1000;
+    packet.uptimeSeconds = millis() / 1000UL;
     esp_now_send(masterMac_, reinterpret_cast<const uint8_t*>(&packet), sizeof(packet));
   }
 
@@ -2706,9 +2790,11 @@ private:
     packet.paired = paired_ ? 1 : 0;
     packet.hashrate = snapshot.hashrate;
     packet.effectiveHashrate = snapshot.effectiveHashrate;
-    packet.uptimeSeconds = snapshot.uptimeSeconds;
     packet.lastSeenJobSeq = currentJobSeq_;
     packet.capabilities = localSlaveCapabilities();
+    packet.temperatureDeciC = localTemperatureDeciC();
+    packet.cpuFrequencyMhz = localCpuFrequencyMhz();
+    packet.uptimeSeconds = millis() / 1000UL;
     strncpy(packet.lastError, snapshot.lastError, sizeof(packet.lastError) - 1);
     esp_now_send(masterMac_, reinterpret_cast<const uint8_t*>(&packet), sizeof(packet));
   }
@@ -2767,6 +2853,7 @@ private:
     packet.bestDifficulty = assignmentBest_;
     packet.found = found ? 1 : 0;
     packet.capabilities = localSlaveCapabilities();
+    packet.temperatureDeciC = localTemperatureDeciC();
     packet.foundNonce = foundNonce;
     packet.foundDifficulty = foundDifficulty;
     pendingResultPacket_ = packet;
@@ -3048,8 +3135,10 @@ private:
     uint32_t foundNonce = 0;
     float foundDifficulty = 0.0f;
 
-#if defined(CONFIG_IDF_TARGET_ESP32S3)
+#if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
     const bool hardwareWorker = !secondary;
+#endif
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
     bool hardwareReady = false;
     uint32_t hardwareMidstate[8] = {};
     uint8_t hardwareReference[32] = {};
@@ -3064,6 +3153,8 @@ private:
       prepareHardwareMidstateS3Unlocked(work, hardwareMidstate);
       hardwareReady = validateHardwareS3Unlocked(work, hardwareMidstate, startNonce, hardwareReference);
     }
+#elif defined(CONFIG_IDF_TARGET_ESP32)
+    if (hardwareWorker) esp_sha_lock_engine(SHA2_256);
 #else
     (void)secondary;
 #endif
@@ -3075,6 +3166,10 @@ private:
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
       const bool candidate = hardwareReady
           ? hashNonceHardwareS3Unlocked(work, hardwareMidstate, nonce, hash)
+          : hashNonceSoftwarePrepared(work, nonce, hash);
+#elif defined(CONFIG_IDF_TARGET_ESP32)
+      const bool candidate = hardwareWorker
+          ? hashNonceHardwareEsp32Unlocked(work, nonce, hash)
           : hashNonceSoftwarePrepared(work, nonce, hash);
 #else
       const bool candidate = hashNonceSoftwarePrepared(work, nonce, hash);
@@ -3093,6 +3188,8 @@ private:
 
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
     if (hardwareWorker) esp_sha_release_hardware();
+#elif defined(CONFIG_IDF_TARGET_ESP32)
+    if (hardwareWorker) esp_sha_unlock_engine(SHA2_256);
 #endif
 
     noteDualProgress(assignmentId, processed, localBest, found, foundNonce, foundDifficulty);
@@ -3259,7 +3356,7 @@ private:
   volatile bool stopRequested_ = false;
 #endif
 #if MICRI_CLUSTER_DUAL_SLAVE_WORKER
-#if MICRI_CLUSTER_S3_SOFTWARE_WORKER
+#if MICRI_CLUSTER_SECONDARY_SOFTWARE_WORKER
   TaskHandle_t secondaryTask_ = nullptr;
   volatile bool secondaryStopRequested_ = false;
 #endif
