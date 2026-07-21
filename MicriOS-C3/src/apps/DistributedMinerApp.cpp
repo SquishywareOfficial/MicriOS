@@ -3,7 +3,7 @@
 #include <Arduino.h>
 #include <U8g2lib.h>
 
-#define FEMTO_CLUSTER_SERIAL_DEBUG 1
+#define MICRI_CLUSTER_SERIAL_DEBUG 1
 #include "../shared/logic/MinerClusterLogic.h"
 
 namespace {

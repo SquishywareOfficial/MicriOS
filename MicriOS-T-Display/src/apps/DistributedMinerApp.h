@@ -31,6 +31,7 @@ public:
   void debugPrintStats(const char* reason = "debug");
 
 protected:
+  bool startsRunningImmediately() const override;
   bool updateStart(uint32_t deltaMs, const ButtonInput& b1, const ButtonInput& b2) override;
   void onAppReset() override;
   void onAppExit() override;
@@ -40,8 +41,8 @@ protected:
 
 private:
   enum class Role : uint8_t {
-    Master,
-    Slave
+    Master = 0,
+    Slave = 1
   };
 
   enum class MasterPage : uint8_t {
@@ -50,6 +51,8 @@ private:
     Pool,
     Pairing,
     Controls,
+    Role,
+    Display,
     Reset,
     Count
   };
@@ -58,6 +61,8 @@ private:
     Status,
     Work,
     Debug,
+    Role,
+    Display,
     Clear,
     Exit,
     Count
@@ -65,9 +70,17 @@ private:
 
   void stopAll();
   void switchToMasterForDebug();
+  void loadDisplayPreference();
+  void saveDisplayPreference();
+  void saveRolePreference();
+  void setMasterRunning(bool running);
+  void switchRole(Role role);
+  void toggleDisplayOrientation();
+  void advanceSlaveDetail();
   void markDirty();
   void forceClear();
   void printStatsLine(const MinerCluster::MasterStats& stats, const char* reason);
+  void printSlaveStatsLine(const MinerCluster::SlaveStats& stats, const char* reason);
   const char* pageTitle() const;
   uint16_t stateColor(MinerCluster::MasterState state) const;
   uint16_t slaveStateColor(MinerCluster::SlaveState state) const;
@@ -85,6 +98,10 @@ private:
   template <typename Canvas>
   void drawControls(Canvas& canvas, const MinerCluster::MasterStats& stats);
   template <typename Canvas>
+  void drawRole(Canvas& canvas);
+  template <typename Canvas>
+  void drawDisplay(Canvas& canvas, const MinerCluster::MasterStats& stats);
+  template <typename Canvas>
   void drawReset(Canvas& canvas, const MinerCluster::MasterStats& stats);
   template <typename Canvas>
   void drawSlaveStatus(Canvas& canvas, const MinerCluster::SlaveStats& stats);
@@ -93,9 +110,15 @@ private:
   template <typename Canvas>
   void drawSlaveDebug(Canvas& canvas, const MinerCluster::SlaveStats& stats);
   template <typename Canvas>
+  void drawSlaveDisplay(Canvas& canvas, const MinerCluster::SlaveStats& stats);
+  template <typename Canvas>
   void drawSlaveClear(Canvas& canvas, const MinerCluster::SlaveStats& stats);
   template <typename Canvas>
   void drawSlaveExit(Canvas& canvas, const MinerCluster::SlaveStats& stats);
+  template <typename Canvas>
+  void drawPortraitFrame(Canvas& canvas);
+  template <typename Canvas>
+  void drawPortraitStart(Canvas& canvas);
 
   MinerCluster::MasterEngine* cluster_;
   MinerCluster::SlaveEngine* slave_ = nullptr;
@@ -107,4 +130,8 @@ private:
   bool startIntroPageRendered_ = false;
   uint8_t lastStartIntroPage_ = 255;
   uint32_t lastSerialStatsMs_ = 0;
+  bool displayPreferenceLoaded_ = false;
+  bool portraitMode_ = false;
+  bool masterShouldRun_ = true;
+  uint8_t slaveDetailIndex_ = 0;
 };

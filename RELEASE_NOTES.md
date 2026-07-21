@@ -1,5 +1,75 @@
 # Release Notes
 
+## v3.0 b86
+
+- Added dedicated `MicriOS-S3-Zero-Headless` Distributed Miner slave firmware
+  for ESP32-S3FH4R2 boards, with BOOT on `GPIO0`, QSPI PSRAM configuration, and
+  no Bluetooth/app-launcher overhead.
+- Added WS2812 RGB state colors for boot, unpaired search, stale-master
+  reconnect, paired idle, active mining, errors, engine restart, and pairing
+  reset acknowledgements.
+- Added a persistent single-tap status-LED toggle to S3-Zero slaves so clustered
+  nodes can remain completely dark without losing serial diagnostics.
+- Added an ESP32-S3 register-level hardware SHA worker with a first-use
+  software cross-check and automatic software fallback; the optional core-0
+  baked-software helper remains available for measured A/B testing.
+- Fixed S3 hardware validation so it derives the SHA peripheral's native
+  midstate separately from the software miner and computes its full reference
+  hash before taking the non-recursive SHA lock. First-board testing now reaches
+  hardware mode at about 159 KH/s raw and 122-129 KH/s effective.
+- Tuned the distributed miner slave engine so ESP32-S3 targets advertise fast/hardware/dual-worker capability, accept larger nonce assignments, and buffer one queued assignment so the master can prefetch the next batch before the current one finishes.
+- Added effective hashrate reporting for prefetched slave work so the master can distinguish raw hashing speed from assignment/ESP-NOW overhead.
+- Tuned S3 slave cancellation checks from observed hashrate so high-speed slaves do less hot-loop polling while still responding to new jobs/cancels on a bounded cadence.
+- Moved cluster ESP-NOW receive work out of WiFi callbacks into bounded task
+  queues, added assignment/result acknowledgements and retries, suppressed
+  duplicate results, and added per-master session IDs plus job-aware cancels so
+  delayed packets cannot replace or cancel current work.
+- Added cooperative worker delays so the headless S3 miner does not starve
+  WiFi, idle/watchdog, serial, LED, or BOOT processing while hashing.
+- Added local miner diagnostics for queue drops, delivery/result retries,
+  paired idle time, assignment progress, heap, worker stack watermarks, and S3
+  temperature without enlarging the ESP-NOW protocol packets.
+- Added slave die-temperature reporting to the master by reusing reserved
+  protocol-v3 bytes, keeping status and result packet sizes unchanged. The
+  T-Display Cluster Slaves overview now uses compact integer hashrates plus
+  temperature, while B1 cycles through detailed diagnostics for every slave.
+- Prevented failed/NaN slave temperature samples from appearing as `0 C` or
+  overwriting a valid reading; unavailable samples now use an explicit sentinel
+  and the master retains each node's last valid temperature.
+- Fixed periodic temperature-capable `SlaveHello` packets, which do not carry a
+  temperature field, incorrectly replacing a slave's valid cached reading with
+  zero on the master.
+- Added slave CPU-frequency telemetry using capability-gated reserved bytes in
+  the existing Hello and Status packets, preserving packet sizes and protocol
+  version while allowing the master to distinguish clock changes from other
+  hashrate losses.
+- Reworked T-Display slave detail pages to show CPU frequency and true
+  device-since-boot uptime, and removed the cryptic ACK/queue send counters from
+  the everyday dashboard while retaining them internally for diagnostics.
+- Added a saved T-Display Distributed Miner portrait dashboard for upright
+  USB-down cluster masters, including all eight slave rows, while keeping the
+  rest of MicriOS landscape.
+- Extended the saved portrait layout to T-Display slave pages, including a
+  slave-accessible Display page for upright USB-hub nodes.
+- Added a second baked-software worker to classic ESP32/T-Display cluster
+  slaves alongside their hardware-SHA worker, matching the proven standalone
+  miner architecture while keeping nonce ranges disjoint.
+- Gave fast classic ESP32 slaves 8,192-nonce chunks, 12-second adaptive work
+  assignments, queued prefetch, and a lower dashboard refresh rate to reduce
+  cluster and display overhead.
+- Made the T-Display Distributed Miner remember its Master/Slave role and open
+  directly on that role's dashboard; added an in-app Role page and a separate
+  `Cluster App` Save Manager entry for clearing role/orientation preferences.
+- Persisted the T-Display master's explicit Start/Stop intent so an autolaunched
+  master resumes the cluster, pool connection, and slave work after power loss;
+  explicitly stopping it keeps future launches stopped.
+- Documented the persistent cluster handshake: masters retain their cluster ID,
+  slaves retain the master MAC/cluster ID, and the live master slave list safely
+  repopulates after restart instead of restoring stale records.
+- Made fresh T-Display cluster masters default local mining off so the master
+  can prioritize pool, ESP-NOW, and UI work; existing saved settings are kept.
+- Added S3-Zero build, release packaging, web flasher manifest, and documentation entries.
+
 ## v3.0 b85
 
 - Renamed the active firmware/software branding from Femto OS to `MicriOS`, with flashed devices now described as `Micri Deck` / `MicriDeck`.

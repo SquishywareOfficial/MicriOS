@@ -7,7 +7,9 @@
 #include <WiFiClient.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
+#include <freertos/queue.h>
 #include <mbedtls/sha256.h>
+#include <soc/soc_caps.h>
 #include <stdarg.h>
 
 #include "WiFiLogic.h"
@@ -24,14 +26,26 @@
 #include <sha/sha_parallel_engine.h>
 #endif
 
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+#include <hal/sha_ll.h>
+#include <sha/sha_core.h>
+#include <soc/hwcrypto_reg.h>
+#endif
+
 namespace MinerCluster {
 
-#ifndef FEMTO_CLUSTER_SERIAL_DEBUG
-#define FEMTO_CLUSTER_SERIAL_DEBUG 0
+#ifndef MICRI_CLUSTER_SERIAL_DEBUG
+#define MICRI_CLUSTER_SERIAL_DEBUG 0
+#endif
+
+#if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
+#define MICRI_CLUSTER_SLAVE_TASK_ENABLED 1
+#else
+#define MICRI_CLUSTER_SLAVE_TASK_ENABLED 0
 #endif
 
 inline void debugPrintf(const char* format, ...) {
-#if FEMTO_CLUSTER_SERIAL_DEBUG
+#if MICRI_CLUSTER_SERIAL_DEBUG
   char message[192];
   va_list args;
   va_start(args, format);
@@ -53,20 +67,128 @@ constexpr const char* DEFAULT_HOSTNAME = "MicriDeck-Cluster";
 constexpr uint8_t BROADCAST_MAC[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 constexpr uint8_t MAGIC_0 = 'F';
 constexpr uint8_t MAGIC_1 = 'M';
-constexpr uint8_t PROTOCOL_VERSION = 1;
+constexpr uint8_t PROTOCOL_VERSION = 3;
 constexpr uint8_t MAX_SLAVES = 8;
 constexpr uint32_t DEFAULT_RANGE = 4096;
+constexpr uint32_t DEFAULT_FAST_RANGE = 524288;
 constexpr uint32_t MIN_RANGE = 4096;
 constexpr uint32_t MAX_RANGE = 2000000;
+constexpr uint32_t MAX_FAST_RANGE = 8000000;
 constexpr uint32_t ASSIGNMENT_TIMEOUT_MS = 12000;
 constexpr uint32_t TARGET_ASSIGNMENT_MS = 3000;
+constexpr uint32_t FAST_TARGET_ASSIGNMENT_MS = 12000;
+constexpr uint32_t PREFETCH_PERCENT = 75;
+constexpr uint32_t DELIVERY_RETRY_MS = 250;
+constexpr uint8_t DELIVERY_RETRY_LIMIT = 8;
+constexpr uint32_t RESULT_ACK_TIMEOUT_MS = 5000;
 constexpr uint32_t RETRY_BACKOFF_INITIAL_MS = 5000;
 constexpr uint32_t RETRY_BACKOFF_MAX_MS = 300000;
-#if defined(CONFIG_IDF_TARGET_ESP32)
+#ifndef MICRI_CLUSTER_SLAVE_BATCH_NONCES
+#if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
 constexpr uint16_t SLAVE_BATCH_NONCES = 4096;
 #else
 constexpr uint16_t SLAVE_BATCH_NONCES = 768;
 #endif
+#else
+constexpr uint16_t SLAVE_BATCH_NONCES = MICRI_CLUSTER_SLAVE_BATCH_NONCES;
+#endif
+
+#ifndef MICRI_CLUSTER_SLAVE_TASK_STACK
+#define MICRI_CLUSTER_SLAVE_TASK_STACK 6144
+#endif
+
+#ifndef MICRI_CLUSTER_SLAVE_TASK_PRIORITY
+#define MICRI_CLUSTER_SLAVE_TASK_PRIORITY 2
+#endif
+
+#ifndef MICRI_CLUSTER_SECONDARY_TASK_PRIORITY
+#define MICRI_CLUSTER_SECONDARY_TASK_PRIORITY MICRI_CLUSTER_SLAVE_TASK_PRIORITY
+#endif
+
+#ifndef MICRI_CLUSTER_S3_SOFTWARE_WORKER
+#define MICRI_CLUSTER_S3_SOFTWARE_WORKER 1
+#endif
+
+#ifndef MICRI_CLUSTER_SECONDARY_SOFTWARE_WORKER
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+#define MICRI_CLUSTER_SECONDARY_SOFTWARE_WORKER MICRI_CLUSTER_S3_SOFTWARE_WORKER
+#elif defined(CONFIG_IDF_TARGET_ESP32)
+#define MICRI_CLUSTER_SECONDARY_SOFTWARE_WORKER 1
+#else
+#define MICRI_CLUSTER_SECONDARY_SOFTWARE_WORKER 0
+#endif
+#endif
+
+#ifndef MICRI_CLUSTER_DEFAULT_LOCAL_MINING
+#define MICRI_CLUSTER_DEFAULT_LOCAL_MINING 1
+#endif
+
+#if (defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)) && MICRI_CLUSTER_SLAVE_TASK_ENABLED
+#define MICRI_CLUSTER_DUAL_SLAVE_WORKER 1
+#else
+#define MICRI_CLUSTER_DUAL_SLAVE_WORKER 0
+#endif
+
+enum SlaveCapability : uint8_t {
+  SlaveCapPendingAssignment = 1 << 0,
+  SlaveCapFastAssignment = 1 << 1,
+  SlaveCapDualWorker = 1 << 2,
+  SlaveCapHardwareSha = 1 << 3,
+  SlaveCapTemperature = 1 << 4,
+  SlaveCapCpuFrequency = 1 << 5,
+};
+
+constexpr int16_t TEMPERATURE_UNAVAILABLE = static_cast<int16_t>(-32768);
+constexpr uint8_t CPU_FREQUENCY_UNAVAILABLE = 0;
+
+inline uint8_t localSlaveCapabilities() {
+  uint8_t caps = SlaveCapPendingAssignment;
+#if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
+  caps |= SlaveCapFastAssignment | SlaveCapHardwareSha;
+#if MICRI_CLUSTER_SECONDARY_SOFTWARE_WORKER
+  caps |= SlaveCapDualWorker;
+#endif
+#endif
+#if defined(CONFIG_IDF_TARGET_ESP32) || SOC_TEMP_SENSOR_SUPPORTED
+  caps |= SlaveCapTemperature;
+#endif
+  caps |= SlaveCapCpuFrequency;
+  return caps;
+}
+
+inline uint8_t localCpuFrequencyMhz() {
+  const uint32_t frequencyMhz = getCpuFrequencyMhz();
+  if (frequencyMhz == 0) return CPU_FREQUENCY_UNAVAILABLE;
+  return static_cast<uint8_t>(frequencyMhz > UINT8_MAX ? UINT8_MAX : frequencyMhz);
+}
+
+inline int16_t localTemperatureDeciC() {
+#if defined(CONFIG_IDF_TARGET_ESP32) || SOC_TEMP_SENSOR_SUPPORTED
+  const float temperatureC = temperatureRead();
+  if (!isfinite(temperatureC) || temperatureC < -100.0f || temperatureC > 200.0f) {
+    return TEMPERATURE_UNAVAILABLE;
+  }
+  return static_cast<int16_t>(roundf(temperatureC * 10.0f));
+#else
+  return TEMPERATURE_UNAVAILABLE;
+#endif
+}
+
+inline uint32_t localPreferredAssignmentMs() {
+#if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
+  return FAST_TARGET_ASSIGNMENT_MS;
+#else
+  return TARGET_ASSIGNMENT_MS;
+#endif
+}
+
+inline uint32_t localMaxAssignmentRange() {
+#if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
+  return MAX_FAST_RANGE;
+#else
+  return MAX_RANGE;
+#endif
+}
 
 enum class PacketType : uint8_t {
   PairBeacon = 1,
@@ -75,7 +197,8 @@ enum class PacketType : uint8_t {
   WorkAssign = 4,
   WorkResult = 5,
   SlaveStatus = 6,
-  CancelJob = 7
+  CancelJob = 7,
+  DeliveryAck = 8
 };
 
 enum class MasterState : uint8_t {
@@ -108,7 +231,7 @@ struct MinerConfig {
 };
 
 struct ClusterConfig {
-  bool localMining = true;
+  bool localMining = MICRI_CLUSTER_DEFAULT_LOCAL_MINING != 0;
   uint32_t clusterId = 0;
 };
 
@@ -118,6 +241,7 @@ struct PacketHeader {
   uint8_t version;
   uint8_t type;
   uint32_t clusterId;
+  uint32_t sessionId;
   uint32_t sequence;
   uint8_t sender[6];
 } __attribute__((packed));
@@ -142,7 +266,11 @@ struct SlaveHelloPacket {
   PacketHeader header;
   uint8_t role;
   uint8_t channel;
+  uint8_t capabilities;
+  uint8_t cpuFrequencyMhz;
   uint16_t build;
+  uint32_t preferredAssignmentMs;
+  uint32_t maxAssignmentRange;
   uint32_t uptimeSeconds;
 } __attribute__((packed));
 
@@ -162,9 +290,13 @@ struct WorkResultPacket {
   uint32_t assignmentId;
   uint32_t hashesDone;
   uint32_t elapsedMs;
+  uint32_t wallElapsedMs;
   float hashrate;
+  uint32_t effectiveHashrate;
   float bestDifficulty;
   uint8_t found;
+  uint8_t capabilities;
+  int16_t temperatureDeciC;
   uint32_t foundNonce;
   float foundDifficulty;
 } __attribute__((packed));
@@ -176,8 +308,12 @@ struct SlaveStatusPacket {
   uint8_t paired;
   uint8_t reserved;
   uint32_t hashrate;
+  uint32_t effectiveHashrate;
   uint32_t uptimeSeconds;
   uint32_t lastSeenJobSeq;
+  uint8_t capabilities;
+  int16_t temperatureDeciC;
+  uint8_t cpuFrequencyMhz;
   char lastError[32];
 } __attribute__((packed));
 
@@ -185,6 +321,35 @@ struct CancelJobPacket {
   PacketHeader header;
   uint32_t jobSeq;
 } __attribute__((packed));
+
+enum class AckDisposition : uint8_t {
+  Active = 1,
+  Queued = 2,
+  ResultReceived = 3,
+};
+
+struct DeliveryAckPacket {
+  PacketHeader header;
+  uint8_t ackedType;
+  uint8_t disposition;
+  uint16_t reserved;
+  uint32_t jobSeq;
+  uint32_t assignmentId;
+} __attribute__((packed));
+
+constexpr uint16_t MAX_CLUSTER_PACKET_BYTES = 192;
+constexpr uint8_t RX_QUEUE_DEPTH = 16;
+
+struct RxEvent {
+  uint8_t from[6];
+  uint16_t length;
+  uint8_t data[MAX_CLUSTER_PACKET_BYTES];
+};
+
+static_assert(sizeof(WorkAssignPacket) <= MAX_CLUSTER_PACKET_BYTES, "Work assignment exceeds RX queue packet capacity");
+static_assert(sizeof(WorkResultPacket) <= MAX_CLUSTER_PACKET_BYTES, "Work result exceeds RX queue packet capacity");
+static_assert(sizeof(WorkResultPacket) == 66, "Work result wire size changed");
+static_assert(sizeof(SlaveStatusPacket) == 78, "Slave status wire size changed");
 
 struct Job {
   String jobId;
@@ -231,13 +396,36 @@ struct SlaveRecord {
   uint32_t nonceCount = 0;
   uint32_t assignedAtMs = 0;
   bool assigned = false;
+  uint32_t assignedJobSeq = 0;
+  bool assignmentAcknowledged = false;
+  uint8_t assignmentSendAttempts = 0;
+  uint32_t assignmentLastSentAtMs = 0;
+  bool queued = false;
+  uint32_t queuedJobSeq = 0;
+  uint32_t queuedAssignmentId = 0;
+  uint32_t queuedNonceStart = 0;
+  uint32_t queuedNonceCount = 0;
+  uint32_t queuedAtMs = 0;
+  bool queuedAcknowledged = false;
+  uint8_t queuedSendAttempts = 0;
+  uint32_t queuedLastSentAtMs = 0;
+  uint32_t lastCompletedJobSeq = 0;
+  uint32_t lastCompletedAssignmentId = 0;
+  uint8_t capabilities = 0;
+  uint32_t effectiveHashrate = 0;
+  uint32_t preferredAssignmentMs = 0;
+  uint32_t maxAssignmentRange = 0;
+  uint32_t uptimeSeconds = 0;
+  int16_t temperatureDeciC = TEMPERATURE_UNAVAILABLE;
+  uint8_t cpuFrequencyMhz = CPU_FREQUENCY_UNAVAILABLE;
   float bestDifficulty = 0.0f;
   char status[32] = "";
+  char lastError[32] = "";
 };
 
 struct MasterStats {
   MasterState state = MasterState::Idle;
-  bool localMining = true;
+  bool localMining = MICRI_CLUSTER_DEFAULT_LOCAL_MINING != 0;
   bool pairing = false;
   uint8_t channel = 0;
   uint8_t slaveCount = 0;
@@ -255,6 +443,10 @@ struct MasterStats {
   uint32_t uptimeSeconds = 0;
   uint32_t retryCount = 0;
   uint32_t retryInSeconds = 0;
+  uint32_t rxQueueDrops = 0;
+  uint32_t deliveryRetries = 0;
+  uint32_t freeHeap = 0;
+  uint32_t taskStackHighWater = 0;
   char ssid[33] = "";
   char lastError[72] = "";
 };
@@ -264,6 +456,7 @@ struct SlaveStats {
   bool paired = false;
   uint8_t channel = 1;
   uint32_t hashrate = 0;
+  uint32_t effectiveHashrate = 0;
   uint64_t totalHashes = 0;
   uint32_t jobs = 0;
   uint32_t completed = 0;
@@ -275,6 +468,13 @@ struct SlaveStats {
   uint32_t lastResultMs = 0;
   float bestDifficulty = 0.0f;
   uint32_t uptimeSeconds = 0;
+  uint8_t capabilities = 0;
+  uint32_t rxQueueDrops = 0;
+  uint32_t resultRetries = 0;
+  uint32_t idleMs = 0;
+  uint32_t freeHeap = 0;
+  uint32_t taskStackHighWater = 0;
+  uint32_t secondaryStackHighWater = 0;
   char lastError[48] = "";
   uint8_t masterMac[6] = {};
 };
@@ -372,7 +572,7 @@ public:
   void load() {
     Preferences prefs;
     prefs.begin(CLUSTER_PREF_NS, false);
-    config_.localMining = prefs.getBool("local", true);
+    config_.localMining = prefs.getBool("local", MICRI_CLUSTER_DEFAULT_LOCAL_MINING != 0);
     config_.clusterId = prefs.getUInt("id", 0);
     if (config_.clusterId == 0) {
       config_.clusterId = esp_random();
@@ -505,6 +705,155 @@ inline bool hashNonceSoftware(const WorkContext& source, uint32_t nonce, uint8_t
   memcpy(work.paddedHeader + 76, &nonce, sizeof(nonce));
   return nerd_sha256d_baked(work.midstate, work.paddedHeader + 64, work.bake, hash);
 }
+
+inline bool hashNonceSoftwarePrepared(WorkContext& work, uint32_t nonce, uint8_t hash[32]) {
+  memcpy(work.paddedHeader + 76, &nonce, sizeof(nonce));
+  return nerd_sha256d_baked(work.midstate, work.paddedHeader + 64, work.bake, hash);
+}
+
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+// ESP32-S3 SHA register sequence adapted from NerdMiner_v2 revision
+// a26865f7cdd9ac1a81c5b0a7c355e23cf4a1d568 (MIT). See the retained notice
+// in licenses/NerdMiner_v2-MIT.txt.
+inline void shaWaitIdleS3() {
+  while (REG_READ(SHA_BUSY_REG)) {}
+}
+
+inline void shaWriteDigestS3(const uint32_t digest[8]) {
+  for (uint8_t i = 0; i < 8; i++) {
+    REG_WRITE(SHA_H_BASE + i * sizeof(uint32_t), digest[i]);
+  }
+}
+
+inline void shaFillUpperS3(const uint8_t* upperHeader, uint32_t nonce) {
+  const uint32_t* words = reinterpret_cast<const uint32_t*>(upperHeader);
+  REG_WRITE(SHA_TEXT_BASE + 0 * 4, words[0]);
+  REG_WRITE(SHA_TEXT_BASE + 1 * 4, words[1]);
+  REG_WRITE(SHA_TEXT_BASE + 2 * 4, words[2]);
+  REG_WRITE(SHA_TEXT_BASE + 3 * 4, nonce);
+  REG_WRITE(SHA_TEXT_BASE + 4 * 4, 0x00000080);
+  for (uint8_t i = 5; i < 15; i++) REG_WRITE(SHA_TEXT_BASE + i * 4, 0);
+  REG_WRITE(SHA_TEXT_BASE + 15 * 4, 0x80020000);
+}
+
+inline void shaFillDoubleS3() {
+  for (uint8_t i = 0; i < 8; i++) {
+    REG_WRITE(SHA_TEXT_BASE + i * 4, REG_READ(SHA_H_BASE + i * 4));
+  }
+  REG_WRITE(SHA_TEXT_BASE + 8 * 4, 0x00000080);
+  for (uint8_t i = 9; i < 15; i++) REG_WRITE(SHA_TEXT_BASE + i * 4, 0);
+  REG_WRITE(SHA_TEXT_BASE + 15 * 4, 0x00010000);
+}
+
+inline bool shaReadDigestS3(uint8_t raw[32], bool candidateOnly) {
+  const uint32_t last = REG_READ(SHA_H_BASE + 7 * 4);
+  if (candidateOnly && static_cast<uint16_t>(last >> 16) != 0) return false;
+  for (uint8_t i = 0; i < 7; i++) {
+    const uint32_t word = REG_READ(SHA_H_BASE + i * 4);
+    memcpy(raw + i * 4, &word, sizeof(word));
+  }
+  memcpy(raw + 7 * 4, &last, sizeof(last));
+  return true;
+}
+
+inline void transformS3Digest(const uint8_t raw[32], uint8_t out[32], uint8_t mode) {
+  if (mode == 0) {
+    memcpy(out, raw, 32);
+  } else if (mode == 1) {
+    for (uint8_t i = 0; i < 32; i++) out[i] = raw[31 - i];
+  } else if (mode == 2) {
+    for (uint8_t i = 0; i < 32; i += 4) {
+      out[i + 0] = raw[i + 3];
+      out[i + 1] = raw[i + 2];
+      out[i + 2] = raw[i + 1];
+      out[i + 3] = raw[i + 0];
+    }
+  } else {
+    for (uint8_t i = 0; i < 8; i++) {
+      memcpy(out + i * 4, raw + (7 - i) * 4, 4);
+    }
+  }
+}
+
+inline void prepareHardwareMidstateS3Unlocked(const WorkContext& source, uint32_t midstate[8]) {
+  // The SHA peripheral's digest representation is not the same as the baked
+  // software miner midstate. Generate it once per claimed worker chunk using
+  // the same hardware path that will continue the second header block.
+  REG_WRITE(SHA_MODE_REG, SHA2_256);
+  sha_ll_fill_text_block(source.paddedHeader, 64 / sizeof(uint32_t));
+  sha_ll_start_block(SHA2_256);
+  shaWaitIdleS3();
+  sha_ll_read_digest(SHA2_256, midstate, 8);
+}
+
+inline bool hashNonceHardwareS3RawUnlocked(const WorkContext& source, const uint32_t midstate[8],
+                                            uint32_t nonce, uint8_t raw[32], bool candidateOnly) {
+  REG_WRITE(SHA_MODE_REG, SHA2_256);
+  shaWriteDigestS3(midstate);
+  shaFillUpperS3(source.paddedHeader + 64, nonce);
+  REG_WRITE(SHA_CONTINUE_REG, 1);
+  sha_ll_load(SHA2_256);
+  shaWaitIdleS3();
+  shaFillDoubleS3();
+  REG_WRITE(SHA_START_REG, 1);
+  sha_ll_load(SHA2_256);
+  shaWaitIdleS3();
+  return shaReadDigestS3(raw, candidateOnly);
+}
+
+inline int8_t& s3HardwareDigestMode() {
+  static int8_t mode = -1;
+  return mode;
+}
+
+inline bool& s3HardwareDisabled() {
+  static bool disabled = false;
+  return disabled;
+}
+
+inline bool validateHardwareS3Unlocked(const WorkContext& source, const uint32_t midstate[8], uint32_t nonce,
+                                        const uint8_t referenceHash[32]) {
+  if (s3HardwareDisabled()) return false;
+  if (s3HardwareDigestMode() >= 0) return true;
+
+  uint8_t raw[32];
+  uint8_t software[32];
+  if (!hashNonceHardwareS3RawUnlocked(source, midstate, nonce, raw, false)) {
+    s3HardwareDisabled() = true;
+    return false;
+  }
+  memcpy(software, referenceHash, sizeof(software));
+
+  for (uint8_t mode = 0; mode < 4; mode++) {
+    uint8_t candidate[32];
+    transformS3Digest(raw, candidate, mode);
+    if (memcmp(candidate, software, sizeof(candidate)) == 0) {
+      s3HardwareDigestMode() = static_cast<int8_t>(mode);
+      debugPrintf("[ClusterSlave] S3 hardware SHA validated mode=%u\n", mode);
+      return true;
+    }
+  }
+
+  s3HardwareDisabled() = true;
+  debugPrintf("[ClusterSlave] S3 hardware SHA validation failed; using software\n");
+  return false;
+}
+
+inline bool hashNonceHardwareS3Unlocked(const WorkContext& source, const uint32_t midstate[8], uint32_t nonce,
+                                         uint8_t hash[32]) {
+  if (s3HardwareDisabled() || s3HardwareDigestMode() < 0) return false;
+  uint8_t raw[32];
+  const bool directOrder = s3HardwareDigestMode() == 0;
+  if (!hashNonceHardwareS3RawUnlocked(source, midstate, nonce, raw, directOrder)) return false;
+  transformS3Digest(raw, hash, static_cast<uint8_t>(s3HardwareDigestMode()));
+  if (!directOrder) {
+    uint32_t last;
+    memcpy(&last, hash + 28, sizeof(last));
+    if (static_cast<uint16_t>(last >> 16) != 0) return false;
+  }
+  return true;
+}
+#endif
 
 #if defined(CONFIG_IDF_TARGET_ESP32)
 inline void shaWaitIdleEsp32() {
@@ -720,6 +1069,8 @@ public:
     cluster_ = settings_.config();
     minerConfig_ = loadMinerConfig();
     hostname_ = hostname;
+    sessionId_ = esp_random();
+    if (sessionId_ == 0) sessionId_ = millis() ^ 0x4D435249UL;
     stopRequested_ = false;
     resetStats();
     setLocalMining(cluster_.localMining);
@@ -734,6 +1085,8 @@ public:
 
   void stop() {
     if (task_ == nullptr) {
+      shutdownRadio();
+      destroyRxQueue();
       setState(MasterState::Idle);
       return;
     }
@@ -749,6 +1102,7 @@ public:
       task_ = nullptr;
     }
     shutdownRadio();
+    destroyRxQueue();
     client_.stop();
     WiFi.disconnect(false, false);
     WiFi.mode(WIFI_OFF);
@@ -850,25 +1204,37 @@ public:
     if (from == nullptr || data == nullptr || len < static_cast<int>(sizeof(PacketHeader))) return;
     const PacketHeader* header = reinterpret_cast<const PacketHeader*>(data);
     if (header->magic0 != MAGIC_0 || header->magic1 != MAGIC_1 || header->version != PROTOCOL_VERSION) return;
-    if (header->clusterId != cluster_.clusterId) return;
+    if (header->clusterId != cluster_.clusterId || header->sessionId != sessionId_) return;
 
     switch (static_cast<PacketType>(header->type)) {
       case PacketType::SlaveHello:
         if (len == static_cast<int>(sizeof(SlaveHelloPacket))) {
-          addOrUpdateSlave(from, "hello", 0, 0.0f, 0);
+          const auto* packet = reinterpret_cast<const SlaveHelloPacket*>(data);
+          addOrUpdateSlave(from, "hello", 0, 0, 0.0f, 0, packet->capabilities,
+                           packet->preferredAssignmentMs, packet->maxAssignmentRange,
+                           TEMPERATURE_UNAVAILABLE, packet->cpuFrequencyMhz,
+                           packet->uptimeSeconds, nullptr);
         }
         break;
       case PacketType::SlaveStatus:
         if (len == static_cast<int>(sizeof(SlaveStatusPacket))) {
           const auto* packet = reinterpret_cast<const SlaveStatusPacket*>(data);
           addOrUpdateSlave(from, slaveStateLabel(static_cast<SlaveState>(packet->state)),
-                           packet->hashrate, 0.0f, packet->lastSeenJobSeq);
+                           packet->hashrate, packet->effectiveHashrate, 0.0f, packet->lastSeenJobSeq,
+                           packet->capabilities, 0, 0, packet->temperatureDeciC,
+                           packet->cpuFrequencyMhz, packet->uptimeSeconds, packet->lastError);
         }
         break;
       case PacketType::WorkResult:
         if (len == static_cast<int>(sizeof(WorkResultPacket))) {
           const auto* packet = reinterpret_cast<const WorkResultPacket*>(data);
           handleWorkResult(from, *packet);
+        }
+        break;
+      case PacketType::DeliveryAck:
+        if (len == static_cast<int>(sizeof(DeliveryAckPacket))) {
+          const auto* packet = reinterpret_cast<const DeliveryAckPacket*>(data);
+          handleDeliveryAck(from, *packet);
         }
         break;
       default:
@@ -883,7 +1249,32 @@ private:
 
   static void onReceiveStatic(const esp_now_recv_info_t* info, const uint8_t* data, int len) {
     if (activeMaster() != nullptr && info != nullptr) {
-      activeMaster()->handleIncoming(info->src_addr, data, len);
+      activeMaster()->enqueueIncoming(info->src_addr, data, len);
+    }
+  }
+
+  void enqueueIncoming(const uint8_t* from, const uint8_t* data, int len) {
+    if (rxQueue_ == nullptr || from == nullptr || data == nullptr || len <= 0 ||
+        len > static_cast<int>(MAX_CLUSTER_PACKET_BYTES)) return;
+    RxEvent event = {};
+    memcpy(event.from, from, sizeof(event.from));
+    event.length = static_cast<uint16_t>(len);
+    memcpy(event.data, data, event.length);
+    if (xQueueSend(rxQueue_, &event, 0) != pdTRUE) {
+      portENTER_CRITICAL(&mux_);
+      stats_.rxQueueDrops++;
+      portEXIT_CRITICAL(&mux_);
+      debugPrintf("[ClusterMaster] RX queue full\n");
+    }
+  }
+
+  void processIncomingQueue() {
+    if (rxQueue_ == nullptr) return;
+    RxEvent event;
+    uint8_t processed = 0;
+    while (processed < RX_QUEUE_DEPTH && xQueueReceive(rxQueue_, &event, 0) == pdTRUE) {
+      handleIncoming(event.from, event.data, event.length);
+      processed++;
     }
   }
 
@@ -1020,6 +1411,16 @@ private:
   }
 
   bool beginRadio() {
+    if (rxQueue_ == nullptr) {
+      rxQueue_ = xQueueCreate(RX_QUEUE_DEPTH, sizeof(RxEvent));
+      if (rxQueue_ == nullptr) {
+        setState(MasterState::RadioFailed);
+        setError("Radio queue failed");
+        return false;
+      }
+    } else {
+      xQueueReset(rxQueue_);
+    }
     activeMaster() = this;
     wifi_second_chan_t second = WIFI_SECOND_CHAN_NONE;
     esp_wifi_get_channel(&channel_, &second);
@@ -1058,6 +1459,14 @@ private:
       esp_now_deinit();
       radioStarted_ = false;
     }
+    if (rxQueue_ != nullptr) xQueueReset(rxQueue_);
+  }
+
+  void destroyRxQueue() {
+    if (rxQueue_ != nullptr) {
+      vQueueDelete(rxQueue_);
+      rxQueue_ = nullptr;
+    }
   }
 
   bool connectPool() {
@@ -1077,6 +1486,7 @@ private:
     header.version = PROTOCOL_VERSION;
     header.type = static_cast<uint8_t>(type);
     header.clusterId = cluster_.clusterId;
+    header.sessionId = sessionId_;
     header.sequence = nextSequence_++;
     readMac(header.sender);
   }
@@ -1125,10 +1535,14 @@ private:
     esp_now_send(BROADCAST_MAC, reinterpret_cast<const uint8_t*>(&packet), sizeof(packet));
     for (uint8_t i = 0; i < MAX_SLAVES; i++) {
       slaves_[i].assigned = false;
+      slaves_[i].queued = false;
+      slaves_[i].assignmentAcknowledged = false;
+      slaves_[i].queuedAcknowledged = false;
     }
   }
 
   void serviceRadio(WorkContext& work, float poolDifficulty, uint32_t& lastBeaconAt) {
+    processIncomingQueue();
     const uint32_t now = millis();
     const bool pairingActive = pairingUntilMs_ != 0 && static_cast<int32_t>(pairingUntilMs_ - now) > 0;
     const uint8_t activeSlaves = slaveCount();
@@ -1169,14 +1583,35 @@ private:
     return -1;
   }
 
-  void addOrUpdateSlave(const uint8_t* mac, const char* status, uint32_t hps, float best, uint32_t jobSeq) {
+  void addOrUpdateSlave(const uint8_t* mac, const char* status, uint32_t hps, uint32_t effectiveHps,
+                        float best, uint32_t jobSeq, uint8_t capabilities,
+                        uint32_t preferredAssignmentMs, uint32_t maxAssignmentRange,
+                        int16_t temperatureDeciC, uint8_t cpuFrequencyMhz,
+                        uint32_t uptimeSeconds, const char* lastError) {
     int8_t index = allocSlave(mac);
     if (index < 0) return;
     SlaveRecord& slave = slaves_[index];
     slave.lastSeenMs = millis();
     if (hps > 0) slave.hashrate = hps;
+    if (effectiveHps > 0) slave.effectiveHashrate = effectiveHps;
+    else if (hps > 0 && slave.effectiveHashrate == 0) slave.effectiveHashrate = hps;
+    if (capabilities != 0) slave.capabilities = capabilities;
+    if (preferredAssignmentMs != 0) slave.preferredAssignmentMs = preferredAssignmentMs;
+    if (maxAssignmentRange != 0) slave.maxAssignmentRange = maxAssignmentRange;
+    if ((capabilities & SlaveCapTemperature) != 0 && temperatureDeciC != TEMPERATURE_UNAVAILABLE) {
+      slave.temperatureDeciC = temperatureDeciC;
+    }
+    if ((capabilities & SlaveCapCpuFrequency) != 0 &&
+        cpuFrequencyMhz != CPU_FREQUENCY_UNAVAILABLE) {
+      slave.cpuFrequencyMhz = cpuFrequencyMhz;
+    }
+    if (uptimeSeconds != 0) slave.uptimeSeconds = uptimeSeconds;
     if (best > slave.bestDifficulty) slave.bestDifficulty = best;
     if (jobSeq > 0) slave.lastJobSeq = jobSeq;
+    if (lastError != nullptr) {
+      strncpy(slave.lastError, lastError, sizeof(slave.lastError) - 1);
+      slave.lastError[sizeof(slave.lastError) - 1] = '\0';
+    }
     if (!(slave.assigned && strcmp(status, "hello") == 0)) {
       strncpy(slave.status, status, sizeof(slave.status) - 1);
       slave.status[sizeof(slave.status) - 1] = '\0';
@@ -1184,11 +1619,26 @@ private:
     ensurePeer(mac);
   }
 
+  uint32_t targetMsForSlave(const SlaveRecord& slave) const {
+    if (slave.preferredAssignmentMs != 0) return slave.preferredAssignmentMs;
+    if (slave.capabilities & SlaveCapFastAssignment) return FAST_TARGET_ASSIGNMENT_MS;
+    return TARGET_ASSIGNMENT_MS;
+  }
+
+  uint32_t maxRangeForSlave(const SlaveRecord& slave) const {
+    if (slave.maxAssignmentRange != 0) return slave.maxAssignmentRange;
+    if (slave.capabilities & SlaveCapFastAssignment) return MAX_FAST_RANGE;
+    return MAX_RANGE;
+  }
+
   uint32_t rangeForSlave(const SlaveRecord& slave) const {
-    if (slave.hashrate == 0) return DEFAULT_RANGE;
-    uint32_t range = static_cast<uint32_t>((static_cast<uint64_t>(slave.hashrate) * TARGET_ASSIGNMENT_MS) / 1000ULL);
+    if (slave.hashrate == 0) {
+      return (slave.capabilities & SlaveCapFastAssignment) ? DEFAULT_FAST_RANGE : DEFAULT_RANGE;
+    }
+    uint32_t range = static_cast<uint32_t>((static_cast<uint64_t>(slave.hashrate) * targetMsForSlave(slave)) / 1000ULL);
     if (range < MIN_RANGE) range = MIN_RANGE;
-    if (range > MAX_RANGE) range = MAX_RANGE;
+    const uint32_t maxRange = maxRangeForSlave(slave);
+    if (range > maxRange) range = maxRange;
     return range;
   }
 
@@ -1198,6 +1648,100 @@ private:
     return start;
   }
 
+  uint32_t estimatedAssignmentMs(const SlaveRecord& slave) const {
+    if (slave.hashrate == 0 || slave.nonceCount == 0) return targetMsForSlave(slave);
+    uint32_t estimate = static_cast<uint32_t>((static_cast<uint64_t>(slave.nonceCount) * 1000ULL) / slave.hashrate);
+    if (estimate < 1000) estimate = 1000;
+    return estimate;
+  }
+
+  bool shouldPrefetch(const SlaveRecord& slave, uint32_t now) const {
+    if (!(slave.capabilities & SlaveCapPendingAssignment)) return false;
+    if (!slave.assigned || !slave.assignmentAcknowledged || slave.queued || slave.hashrate == 0) return false;
+    const uint32_t estimate = estimatedAssignmentMs(slave);
+    const uint32_t prefetchAt = max<uint32_t>(1000, (estimate * PREFETCH_PERCENT) / 100);
+    return now - slave.assignedAtMs >= prefetchAt;
+  }
+
+  uint32_t timeoutMsForSlave(const SlaveRecord& slave) const {
+    const uint32_t estimate = estimatedAssignmentMs(slave);
+    return max<uint32_t>(ASSIGNMENT_TIMEOUT_MS, estimate * 2 + 3000);
+  }
+
+  bool sendStoredAssignment(SlaveRecord& slave, float poolDifficulty, bool queued) {
+    WorkAssignPacket packet = {};
+    fillHeader(packet.header, PacketType::WorkAssign);
+    packet.jobSeq = queued ? slave.queuedJobSeq : slave.assignedJobSeq;
+    packet.assignmentId = queued ? slave.queuedAssignmentId : slave.assignmentId;
+    packet.nonceStart = queued ? slave.queuedNonceStart : slave.nonceStart;
+    packet.nonceCount = queued ? slave.queuedNonceCount : slave.nonceCount;
+    packet.poolDifficulty = poolDifficulty;
+    memcpy(packet.blockHeader, currentWork_.header, sizeof(packet.blockHeader));
+    if (!ensurePeer(slave.mac)) return false;
+    const uint32_t now = millis();
+    const bool retry = queued ? slave.queuedSendAttempts > 0 : slave.assignmentSendAttempts > 0;
+    if (retry) {
+      portENTER_CRITICAL(&mux_);
+      stats_.deliveryRetries++;
+      portEXIT_CRITICAL(&mux_);
+    }
+    if (queued) {
+      slave.queuedLastSentAtMs = now;
+      if (slave.queuedSendAttempts < UINT8_MAX) slave.queuedSendAttempts++;
+    } else {
+      slave.assignmentLastSentAtMs = now;
+      if (slave.assignmentSendAttempts < UINT8_MAX) slave.assignmentSendAttempts++;
+    }
+    return esp_now_send(slave.mac, reinterpret_cast<const uint8_t*>(&packet), sizeof(packet)) == ESP_OK;
+  }
+
+  bool sendAssignmentToSlave(SlaveRecord& slave, WorkContext& work, float poolDifficulty, bool queued) {
+    const uint32_t range = rangeForSlave(slave);
+    const uint32_t assignmentId = nextAssignmentId_++;
+    const uint32_t nonceStart = allocateNonceRange(work, range);
+    const uint32_t now = millis();
+
+    if (queued) {
+      slave.queued = true;
+      slave.queuedJobSeq = work.jobSeq;
+      slave.queuedAssignmentId = assignmentId;
+      slave.queuedNonceStart = nonceStart;
+      slave.queuedNonceCount = range;
+      slave.queuedAtMs = now;
+      slave.queuedAcknowledged = false;
+      slave.queuedSendAttempts = 0;
+      slave.queuedLastSentAtMs = 0;
+      strncpy(slave.status, "queued", sizeof(slave.status) - 1);
+    } else {
+      slave.assignmentId = assignmentId;
+      slave.assignedJobSeq = work.jobSeq;
+      slave.nonceStart = nonceStart;
+      slave.nonceCount = range;
+      slave.assignedAtMs = now;
+      slave.assigned = true;
+      slave.assignmentAcknowledged = false;
+      slave.assignmentSendAttempts = 0;
+      slave.assignmentLastSentAtMs = 0;
+      slave.lastJobSeq = work.jobSeq;
+      strncpy(slave.status, "assigned", sizeof(slave.status) - 1);
+    }
+    slave.status[sizeof(slave.status) - 1] = '\0';
+    return sendStoredAssignment(slave, poolDifficulty, queued);
+  }
+
+  void serviceAssignmentDelivery(SlaveRecord& slave, float poolDifficulty, uint32_t now) {
+    if (slave.assigned && !slave.assignmentAcknowledged &&
+        slave.assignmentSendAttempts < DELIVERY_RETRY_LIMIT &&
+        now - slave.assignmentLastSentAtMs >= DELIVERY_RETRY_MS) {
+      sendStoredAssignment(slave, poolDifficulty, false);
+    }
+    if (slave.queued && !slave.queuedAcknowledged &&
+        slave.queuedSendAttempts < DELIVERY_RETRY_LIMIT &&
+        now - slave.queuedLastSentAtMs >= DELIVERY_RETRY_MS) {
+      sendStoredAssignment(slave, poolDifficulty, true);
+    }
+  }
+
   void assignSlaveWork(WorkContext& work, float poolDifficulty) {
     if (!radioStarted_) return;
     const uint32_t now = millis();
@@ -1205,42 +1749,104 @@ private:
       SlaveRecord& slave = slaves_[i];
       if (!slave.used) continue;
       if (now - slave.lastSeenMs > 10000) continue;
-      if (slave.assigned && now - slave.assignedAtMs < ASSIGNMENT_TIMEOUT_MS) continue;
-
-      const uint32_t range = rangeForSlave(slave);
-      WorkAssignPacket packet = {};
-      fillHeader(packet.header, PacketType::WorkAssign);
-      packet.jobSeq = work.jobSeq;
-      packet.assignmentId = nextAssignmentId_++;
-      packet.nonceStart = allocateNonceRange(work, range);
-      packet.nonceCount = range;
-      packet.poolDifficulty = poolDifficulty;
-      memcpy(packet.blockHeader, work.header, sizeof(packet.blockHeader));
-      if (!ensurePeer(slave.mac)) continue;
-      if (esp_now_send(slave.mac, reinterpret_cast<const uint8_t*>(&packet), sizeof(packet)) == ESP_OK) {
-        slave.assignmentId = packet.assignmentId;
-        slave.nonceStart = packet.nonceStart;
-        slave.nonceCount = packet.nonceCount;
-        slave.assignedAtMs = now;
-        slave.assigned = true;
-        slave.lastJobSeq = work.jobSeq;
-        strncpy(slave.status, "assigned", sizeof(slave.status) - 1);
+      serviceAssignmentDelivery(slave, poolDifficulty, now);
+      if (slave.assigned) {
+        if (shouldPrefetch(slave, now)) {
+          sendAssignmentToSlave(slave, work, poolDifficulty, true);
+        }
+        if (now - slave.assignedAtMs < timeoutMsForSlave(slave)) {
+          continue;
+        }
       }
+      slave.assigned = false;
+      slave.queued = false;
+      sendAssignmentToSlave(slave, work, poolDifficulty, false);
     }
+  }
+
+  void sendDeliveryAck(const uint8_t* to, PacketType ackedType, AckDisposition disposition,
+                       uint32_t jobSeq, uint32_t assignmentId) {
+    if (!radioStarted_ || !ensurePeer(to)) return;
+    DeliveryAckPacket packet = {};
+    fillHeader(packet.header, PacketType::DeliveryAck);
+    packet.ackedType = static_cast<uint8_t>(ackedType);
+    packet.disposition = static_cast<uint8_t>(disposition);
+    packet.jobSeq = jobSeq;
+    packet.assignmentId = assignmentId;
+    esp_now_send(to, reinterpret_cast<const uint8_t*>(&packet), sizeof(packet));
+  }
+
+  void handleDeliveryAck(const uint8_t* from, const DeliveryAckPacket& packet) {
+    if (packet.ackedType != static_cast<uint8_t>(PacketType::WorkAssign)) return;
+    const int8_t index = findSlave(from);
+    if (index < 0) return;
+    SlaveRecord& slave = slaves_[index];
+    slave.lastSeenMs = millis();
+    if (slave.assigned && packet.jobSeq == slave.assignedJobSeq &&
+        packet.assignmentId == slave.assignmentId) {
+      slave.assignmentAcknowledged = true;
+      strncpy(slave.status,
+              packet.disposition == static_cast<uint8_t>(AckDisposition::Queued) ? "queued" : "working",
+              sizeof(slave.status) - 1);
+    } else if (slave.queued && packet.jobSeq == slave.queuedJobSeq &&
+               packet.assignmentId == slave.queuedAssignmentId) {
+      slave.queuedAcknowledged = true;
+      strncpy(slave.status, "queued", sizeof(slave.status) - 1);
+    }
+    slave.status[sizeof(slave.status) - 1] = '\0';
   }
 
   void handleWorkResult(const uint8_t* from, const WorkResultPacket& packet) {
     int8_t index = findSlave(from);
+    sendDeliveryAck(from, PacketType::WorkResult, AckDisposition::ResultReceived,
+                    packet.jobSeq, packet.assignmentId);
+    if (index < 0) return;
     if (index >= 0) {
       SlaveRecord& slave = slaves_[index];
       slave.lastSeenMs = millis();
-      slave.assigned = false;
+      if (slave.lastCompletedJobSeq == packet.jobSeq &&
+          slave.lastCompletedAssignmentId == packet.assignmentId) {
+        return;
+      }
+      slave.lastCompletedJobSeq = packet.jobSeq;
+      slave.lastCompletedAssignmentId = packet.assignmentId;
+      if (packet.assignmentId == slave.assignmentId) {
+        if (slave.queued) {
+          slave.assignedJobSeq = slave.queuedJobSeq;
+          slave.assignmentId = slave.queuedAssignmentId;
+          slave.nonceStart = slave.queuedNonceStart;
+          slave.nonceCount = slave.queuedNonceCount;
+          slave.assignedAtMs = millis();
+          slave.assignmentAcknowledged = slave.queuedAcknowledged;
+          slave.assignmentSendAttempts = slave.queuedSendAttempts;
+          slave.assignmentLastSentAtMs = slave.queuedLastSentAtMs;
+          slave.queued = false;
+          slave.queuedAcknowledged = false;
+          strncpy(slave.status, "prefetched", sizeof(slave.status) - 1);
+        } else {
+          slave.assigned = false;
+        }
+      } else if (packet.assignmentId == slave.queuedAssignmentId) {
+        slave.queued = false;
+        slave.queuedAcknowledged = false;
+      }
       if (packet.hashrate > 0.0f) {
         slave.hashrate = static_cast<uint32_t>(packet.hashrate);
       }
+      if (packet.effectiveHashrate > 0) {
+        slave.effectiveHashrate = packet.effectiveHashrate;
+      } else if (packet.hashrate > 0.0f && slave.effectiveHashrate == 0) {
+        slave.effectiveHashrate = static_cast<uint32_t>(packet.hashrate);
+      }
+      if (packet.capabilities != 0) slave.capabilities = packet.capabilities;
+      if ((packet.capabilities & SlaveCapTemperature) != 0 &&
+          packet.temperatureDeciC != TEMPERATURE_UNAVAILABLE) {
+        slave.temperatureDeciC = packet.temperatureDeciC;
+      }
       slave.lastJobSeq = packet.jobSeq;
       if (packet.bestDifficulty > slave.bestDifficulty) slave.bestDifficulty = packet.bestDifficulty;
-      strncpy(slave.status, packet.found ? "share" : "done", sizeof(slave.status) - 1);
+      if (packet.found) strncpy(slave.status, "share", sizeof(slave.status) - 1);
+      slave.status[sizeof(slave.status) - 1] = '\0';
     }
     portENTER_CRITICAL(&mux_);
     stats_.slaveHashes += packet.hashesDone;
@@ -1263,7 +1869,7 @@ private:
     for (uint8_t i = 0; i < MAX_SLAVES; i++) {
       if (slaves_[i].used && now - slaves_[i].lastSeenMs < 10000) {
         active++;
-        slaveHps += slaves_[i].hashrate;
+        slaveHps += slaves_[i].effectiveHashrate > 0 ? slaves_[i].effectiveHashrate : slaves_[i].hashrate;
       }
     }
     portENTER_CRITICAL(&mux_);
@@ -1625,12 +2231,16 @@ private:
   void updateRate(uint32_t& lastRateAt, uint64_t& lastLocalHashes) {
     const uint32_t now = millis();
     if (now - lastRateAt < 1000) return;
+    const uint32_t freeHeap = ESP.getFreeHeap();
+    const uint32_t stackHighWater = uxTaskGetStackHighWaterMark(nullptr);
     portENTER_CRITICAL(&mux_);
     const uint64_t local = stats_.localHashes;
     const uint32_t elapsed = now - lastRateAt;
     stats_.localHps = elapsed == 0 ? 0 : static_cast<uint32_t>((local - lastLocalHashes) * 1000ULL / elapsed);
     stats_.totalHps = stats_.localHps + stats_.slaveHps;
     stats_.uptimeSeconds = (now - startedAtMs_) / 1000;
+    stats_.freeHeap = freeHeap;
+    stats_.taskStackHighWater = stackHighWater;
     portEXIT_CRITICAL(&mux_);
     lastRateAt = now;
     lastLocalHashes = local;
@@ -1648,6 +2258,7 @@ private:
   uint32_t nextSequence_ = 1;
   uint32_t nextAssignmentId_ = 1;
   uint32_t currentJobSeq_ = 0;
+  uint32_t sessionId_ = 0;
   uint32_t nextRequestId_ = 4;
   uint32_t pairingUntilMs_ = 0;
   uint32_t lastPairBeaconAt_ = 0;
@@ -1657,6 +2268,7 @@ private:
   uint32_t startedAtMs_ = 0;
   MasterStats stats_;
   portMUX_TYPE mux_ = portMUX_INITIALIZER_UNLOCKED;
+  QueueHandle_t rxQueue_ = nullptr;
 };
 
 class SlaveEngine {
@@ -1665,7 +2277,13 @@ public:
 
   void begin() {
     startedAtMs_ = millis();
-#if defined(CONFIG_IDF_TARGET_ESP32)
+    lastServiceAtMs_ = startedAtMs_;
+    lastDiagnosticsAtMs_ = 0;
+    portENTER_CRITICAL(&mux_);
+    stats_ = SlaveStats();
+    portEXIT_CRITICAL(&mux_);
+    resetRuntimeState();
+#if MICRI_CLUSTER_SLAVE_TASK_ENABLED
     stopRequested_ = false;
 #endif
     loadPairing();
@@ -1675,6 +2293,12 @@ public:
     WiFi.setSleep(false);
     esp_wifi_set_ps(WIFI_PS_NONE);
     readMac(localMac_);
+    if (rxQueue_ == nullptr) rxQueue_ = xQueueCreate(RX_QUEUE_DEPTH, sizeof(RxEvent));
+    if (rxQueue_ == nullptr) {
+      setError("Radio queue failed");
+      return;
+    }
+    xQueueReset(rxQueue_);
     activeSlave() = this;
     if (esp_now_init() == ESP_OK) {
       radioStarted_ = true;
@@ -1684,13 +2308,13 @@ public:
     }
     setChannel(channel_);
     sendHello();
-#if defined(CONFIG_IDF_TARGET_ESP32)
+#if MICRI_CLUSTER_SLAVE_TASK_ENABLED
     startTask();
 #endif
   }
 
   void stop() {
-#if defined(CONFIG_IDF_TARGET_ESP32)
+#if MICRI_CLUSTER_SLAVE_TASK_ENABLED
     stopTask();
 #endif
     if (activeSlave() == this) activeSlave() = nullptr;
@@ -1698,6 +2322,10 @@ public:
       esp_now_unregister_recv_cb();
       esp_now_deinit();
       radioStarted_ = false;
+    }
+    if (rxQueue_ != nullptr) {
+      vQueueDelete(rxQueue_);
+      rxQueue_ = nullptr;
     }
     WiFi.disconnect(false, false);
     WiFi.mode(WIFI_OFF);
@@ -1712,14 +2340,16 @@ public:
     paired_ = false;
     memset(masterMac_, 0, sizeof(masterMac_));
     clusterId_ = 0;
+    masterSessionId_ = 0;
+    highestAssignmentIdSeen_ = 0;
+    pendingResultActive_ = false;
     masterPeerChannel_ = 0;
-    assignmentActive_ = false;
-    clearLiveWorkStats();
+    cancelCurrentAssignment();
     setState(SlaveState::Searching);
   }
 
   void update() {
-#if defined(CONFIG_IDF_TARGET_ESP32)
+#if MICRI_CLUSTER_SLAVE_TASK_ENABLED
     if (task_ == nullptr) service();
     return;
 #else
@@ -1744,10 +2374,14 @@ public:
     if (type == PacketType::PairBeacon && len == static_cast<int>(sizeof(PairBeaconPacket))) {
       const auto* packet = reinterpret_cast<const PairBeaconPacket*>(data);
       if (!paired_) {
-        savePairing(from, packet->header.clusterId);
+        savePairing(from, packet->header.clusterId, packet->header.sessionId);
       }
       if (paired_ && macEquals(masterMac_, from)) {
-        clusterId_ = packet->header.clusterId;
+        if (clusterId_ != packet->header.clusterId) {
+          savePairing(from, packet->header.clusterId, packet->header.sessionId);
+        } else {
+          adoptMasterSession(packet->header.sessionId);
+        }
         lastMasterSeenMs_ = millis();
         setChannel(packet->channel);
         sendHello();
@@ -1760,11 +2394,14 @@ public:
 
     if (type == PacketType::MasterBeacon && len == static_cast<int>(sizeof(MasterBeaconPacket))) {
       const auto* packet = reinterpret_cast<const MasterBeaconPacket*>(data);
+      adoptMasterSession(packet->header.sessionId);
       setChannel(packet->channel);
       sendHelloThrottled();
       if (!assignmentActive_) setState(SlaveState::Paired);
       return;
     }
+
+    if (masterSessionId_ == 0 || header->sessionId != masterSessionId_) return;
 
     if (type == PacketType::WorkAssign && len == static_cast<int>(sizeof(WorkAssignPacket))) {
       const auto* packet = reinterpret_cast<const WorkAssignPacket*>(data);
@@ -1773,35 +2410,131 @@ public:
     }
 
     if (type == PacketType::CancelJob && len == static_cast<int>(sizeof(CancelJobPacket))) {
-      assignmentActive_ = false;
-      clearLiveWorkStats();
-      setState(SlaveState::Paired);
+      const auto* packet = reinterpret_cast<const CancelJobPacket*>(data);
+      cancelAssignmentsExcept(packet->jobSeq);
+      return;
+    }
+
+    if (type == PacketType::DeliveryAck && len == static_cast<int>(sizeof(DeliveryAckPacket))) {
+      const auto* packet = reinterpret_cast<const DeliveryAckPacket*>(data);
+      if (packet->ackedType == static_cast<uint8_t>(PacketType::WorkResult) &&
+          pendingResultActive_ && packet->jobSeq == pendingResultPacket_.jobSeq &&
+          packet->assignmentId == pendingResultPacket_.assignmentId) {
+        pendingResultActive_ = false;
+      }
     }
   }
 
 private:
-#if defined(CONFIG_IDF_TARGET_ESP32)
+  void resetRuntimeState() {
+#if MICRI_CLUSTER_DUAL_SLAVE_WORKER
+    portENTER_CRITICAL(&workMux_);
+    assignmentActive_ = false;
+    dualWorkersActive_ = 0;
+    dualNextNonce_ = 0;
+    dualFound_ = false;
+    dualFoundNonce_ = 0;
+    dualFoundDifficulty_ = 0.0f;
+    portEXIT_CRITICAL(&workMux_);
+#else
+    assignmentActive_ = false;
+#endif
+    pendingAssignmentActive_ = false;
+    pendingPacket_ = WorkAssignPacket();
+    pendingResultActive_ = false;
+    pendingResultPacket_ = WorkResultPacket();
+    pendingResultSendAttempts_ = 0;
+    pendingResultLastSentAtMs_ = 0;
+    currentWork_ = WorkContext();
+    currentJobSeq_ = 0;
+    currentAssignmentId_ = 0;
+    assignmentStartNonce_ = 0;
+    assignmentNonceCount_ = 0;
+    assignmentNextNonce_ = 0;
+    assignmentStartedAtMs_ = 0;
+    assignmentHashes_ = 0;
+    assignmentBest_ = 0.0f;
+    lastMasterSeenMs_ = 0;
+    lastHelloAtMs_ = 0;
+    lastStatusAtMs_ = 0;
+  }
+
+#if MICRI_CLUSTER_SLAVE_TASK_ENABLED
   static void taskEntry(void* ctx) {
     static_cast<SlaveEngine*>(ctx)->runTask();
   }
 
+#if MICRI_CLUSTER_DUAL_SLAVE_WORKER && MICRI_CLUSTER_SECONDARY_SOFTWARE_WORKER
+  static void secondaryTaskEntry(void* ctx) {
+    static_cast<SlaveEngine*>(ctx)->runSecondaryTask();
+  }
+#endif
+
   bool startTask() {
     if (task_ != nullptr) return true;
-    BaseType_t ok = xTaskCreate(taskEntry, "MicriSlv", 6144, this, 2, &task_);
+    stopRequested_ = false;
+#if MICRI_CLUSTER_DUAL_SLAVE_WORKER
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+    BaseType_t ok = xTaskCreatePinnedToCore(taskEntry, "MicriSlv0", MICRI_CLUSTER_SLAVE_TASK_STACK,
+                                            this, MICRI_CLUSTER_SLAVE_TASK_PRIORITY, &task_, 1);
+    if (ok != pdPASS) {
+      ok = xTaskCreate(taskEntry, "MicriSlv0", MICRI_CLUSTER_SLAVE_TASK_STACK,
+                       this, MICRI_CLUSTER_SLAVE_TASK_PRIORITY, &task_);
+    }
+#else
+    // Match the proven standalone classic-ESP32 miner: let FreeRTOS place the
+    // hardware worker instead of pinning it against either UI or WiFi.
+    BaseType_t ok = xTaskCreate(taskEntry, "MicriSlvHw", MICRI_CLUSTER_SLAVE_TASK_STACK,
+                                this, MICRI_CLUSTER_SLAVE_TASK_PRIORITY, &task_);
+#endif
+#else
+    BaseType_t ok = xTaskCreate(taskEntry, "MicriSlv", MICRI_CLUSTER_SLAVE_TASK_STACK,
+                                this, MICRI_CLUSTER_SLAVE_TASK_PRIORITY, &task_);
+#endif
     if (ok != pdPASS) {
       task_ = nullptr;
       setError("Slave task failed");
       return false;
     }
+#if MICRI_CLUSTER_DUAL_SLAVE_WORKER && MICRI_CLUSTER_SECONDARY_SOFTWARE_WORKER
+    secondaryStopRequested_ = false;
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+    BaseType_t secondaryOk = xTaskCreatePinnedToCore(secondaryTaskEntry, "MicriSlv1",
+                                                     MICRI_CLUSTER_SLAVE_TASK_STACK, this,
+                                                     MICRI_CLUSTER_SECONDARY_TASK_PRIORITY,
+                                                     &secondaryTask_, 0);
+#else
+    BaseType_t secondaryOk = xTaskCreate(secondaryTaskEntry, "MicriSlvSw",
+                                         MICRI_CLUSTER_SLAVE_TASK_STACK, this,
+                                         MICRI_CLUSTER_SECONDARY_TASK_PRIORITY, &secondaryTask_);
+#endif
+    if (secondaryOk != pdPASS) {
+      secondaryTask_ = nullptr;
+      debugPrintf("[ClusterSlave] secondary worker unavailable\n");
+    }
+#endif
     return true;
   }
 
   void stopTask() {
     stopRequested_ = true;
+#if MICRI_CLUSTER_DUAL_SLAVE_WORKER && MICRI_CLUSTER_SECONDARY_SOFTWARE_WORKER
+    secondaryStopRequested_ = true;
+#endif
     const uint32_t started = millis();
-    while (task_ != nullptr && millis() - started < 1000) {
+    while ((task_ != nullptr
+#if MICRI_CLUSTER_DUAL_SLAVE_WORKER && MICRI_CLUSTER_SECONDARY_SOFTWARE_WORKER
+            || secondaryTask_ != nullptr
+#endif
+            ) && millis() - started < 1000) {
       delay(10);
     }
+#if MICRI_CLUSTER_DUAL_SLAVE_WORKER && MICRI_CLUSTER_SECONDARY_SOFTWARE_WORKER
+    if (secondaryTask_ != nullptr) {
+      vTaskDelete(secondaryTask_);
+      secondaryTask_ = nullptr;
+    }
+#endif
     if (task_ != nullptr) {
       vTaskDelete(task_);
       task_ = nullptr;
@@ -1809,10 +2542,15 @@ private:
   }
 
   void runTask() {
+    uint32_t lastCooperativeDelayAt = millis();
     while (!stopRequested_) {
       service();
       if (!assignmentActive_) {
         vTaskDelay(pdMS_TO_TICKS(10));
+        lastCooperativeDelayAt = millis();
+      } else if (millis() - lastCooperativeDelayAt >= 50) {
+        vTaskDelay(1);
+        lastCooperativeDelayAt = millis();
       } else {
         taskYIELD();
       }
@@ -1820,10 +2558,62 @@ private:
     task_ = nullptr;
     vTaskDelete(nullptr);
   }
+
+#if MICRI_CLUSTER_DUAL_SLAVE_WORKER && MICRI_CLUSTER_SECONDARY_SOFTWARE_WORKER
+  void runSecondaryTask() {
+    uint32_t lastCooperativeDelayAt = millis();
+    while (!stopRequested_ && !secondaryStopRequested_) {
+      if (assignmentActive_) {
+        if (!processDualWorkerChunk(true)) {
+          vTaskDelay(pdMS_TO_TICKS(2));
+          lastCooperativeDelayAt = millis();
+        } else if (millis() - lastCooperativeDelayAt >= 50) {
+          vTaskDelay(1);
+          lastCooperativeDelayAt = millis();
+        } else {
+          taskYIELD();
+        }
+      } else {
+        vTaskDelay(pdMS_TO_TICKS(5));
+      }
+    }
+    secondaryTask_ = nullptr;
+    vTaskDelete(nullptr);
+  }
+#endif
 #endif
 
   void service() {
+    processIncomingQueue();
     const uint32_t now = millis();
+    const uint32_t serviceElapsed = lastServiceAtMs_ == 0 ? 0 : now - lastServiceAtMs_;
+    lastServiceAtMs_ = now;
+    if (paired_ && !assignmentActive_ && !pendingAssignmentActive_ && serviceElapsed > 0) {
+      portENTER_CRITICAL(&mux_);
+      stats_.idleMs += serviceElapsed;
+      portEXIT_CRITICAL(&mux_);
+    }
+    if (lastDiagnosticsAtMs_ == 0 || now - lastDiagnosticsAtMs_ >= 2000) {
+      const uint32_t freeHeap = ESP.getFreeHeap();
+      uint32_t stackHighWater = 0;
+      uint32_t secondaryHighWater = 0;
+#if MICRI_CLUSTER_SLAVE_TASK_ENABLED
+      stackHighWater = uxTaskGetStackHighWaterMark(nullptr);
+#endif
+#if MICRI_CLUSTER_DUAL_SLAVE_WORKER && MICRI_CLUSTER_SECONDARY_SOFTWARE_WORKER
+      if (secondaryTask_ != nullptr) {
+        secondaryHighWater = uxTaskGetStackHighWaterMark(secondaryTask_);
+      }
+#endif
+      portENTER_CRITICAL(&mux_);
+      stats_.freeHeap = freeHeap;
+      stats_.taskStackHighWater = stackHighWater;
+      stats_.secondaryStackHighWater = secondaryHighWater;
+      portEXIT_CRITICAL(&mux_);
+      lastDiagnosticsAtMs_ = now;
+    }
+    servicePendingResult(now);
+    startPendingIfReady();
     const bool masterStale = paired_ && now - lastMasterSeenMs_ > 10000;
     if (!paired_ || masterStale) {
       if (now - lastHopMs_ >= 350) {
@@ -1848,12 +2638,38 @@ private:
     stats_.paired = paired_;
     stats_.channel = channel_;
     stats_.uptimeSeconds = (now - startedAtMs_) / 1000;
+    stats_.capabilities = localSlaveCapabilities();
     memcpy(stats_.masterMac, masterMac_, 6);
     portEXIT_CRITICAL(&mux_);
   }
   static void onReceiveStatic(const esp_now_recv_info_t* info, const uint8_t* data, int len) {
     if (activeSlave() != nullptr && info != nullptr) {
-      activeSlave()->handleIncoming(info->src_addr, data, len);
+      activeSlave()->enqueueIncoming(info->src_addr, data, len);
+    }
+  }
+
+  void enqueueIncoming(const uint8_t* from, const uint8_t* data, int len) {
+    if (rxQueue_ == nullptr || from == nullptr || data == nullptr || len <= 0 ||
+        len > static_cast<int>(MAX_CLUSTER_PACKET_BYTES)) return;
+    RxEvent event = {};
+    memcpy(event.from, from, sizeof(event.from));
+    event.length = static_cast<uint16_t>(len);
+    memcpy(event.data, data, event.length);
+    if (xQueueSend(rxQueue_, &event, 0) != pdTRUE) {
+      portENTER_CRITICAL(&mux_);
+      stats_.rxQueueDrops++;
+      portEXIT_CRITICAL(&mux_);
+      debugPrintf("[ClusterSlave] RX queue full\n");
+    }
+  }
+
+  void processIncomingQueue() {
+    if (rxQueue_ == nullptr) return;
+    RxEvent event;
+    uint8_t processed = 0;
+    while (processed < RX_QUEUE_DEPTH && xQueueReceive(rxQueue_, &event, 0) == pdTRUE) {
+      handleIncoming(event.from, event.data, event.length);
+      processed++;
     }
   }
 
@@ -1870,12 +2686,16 @@ private:
     clusterId_ = prefs.getUInt("id", 0);
     prefs.end();
     paired_ = parseMac(master, masterMac_) && clusterId_ != 0;
+    masterSessionId_ = 0;
+    highestAssignmentIdSeen_ = 0;
     setState(paired_ ? SlaveState::Paired : SlaveState::Searching);
   }
 
-  void savePairing(const uint8_t* master, uint32_t clusterId) {
+  void savePairing(const uint8_t* master, uint32_t clusterId, uint32_t sessionId) {
     memcpy(masterMac_, master, 6);
     clusterId_ = clusterId;
+    masterSessionId_ = sessionId;
+    highestAssignmentIdSeen_ = 0;
     paired_ = true;
     Preferences prefs;
     prefs.begin(CLUSTER_PREF_NS, false);
@@ -1884,6 +2704,14 @@ private:
     prefs.end();
     ensureMasterPeer();
     setState(SlaveState::Paired);
+  }
+
+  void adoptMasterSession(uint32_t sessionId) {
+    if (sessionId == 0 || sessionId == masterSessionId_) return;
+    masterSessionId_ = sessionId;
+    highestAssignmentIdSeen_ = 0;
+    pendingResultActive_ = false;
+    cancelCurrentAssignment();
   }
 
   static String macToString(const uint8_t* mac) {
@@ -1907,6 +2735,7 @@ private:
     header.version = PROTOCOL_VERSION;
     header.type = static_cast<uint8_t>(type);
     header.clusterId = clusterId_;
+    header.sessionId = masterSessionId_;
     header.sequence = nextSequence_++;
     memcpy(header.sender, localMac_, 6);
   }
@@ -1942,8 +2771,12 @@ private:
     fillHeader(packet.header, PacketType::SlaveHello);
     packet.role = 1;
     packet.channel = channel_;
+    packet.capabilities = localSlaveCapabilities();
+    packet.cpuFrequencyMhz = localCpuFrequencyMhz();
     packet.build = 0;
-    packet.uptimeSeconds = (millis() - startedAtMs_) / 1000;
+    packet.preferredAssignmentMs = localPreferredAssignmentMs();
+    packet.maxAssignmentRange = localMaxAssignmentRange();
+    packet.uptimeSeconds = millis() / 1000UL;
     esp_now_send(masterMac_, reinterpret_cast<const uint8_t*>(&packet), sizeof(packet));
   }
 
@@ -1956,26 +2789,80 @@ private:
     packet.channel = channel_;
     packet.paired = paired_ ? 1 : 0;
     packet.hashrate = snapshot.hashrate;
-    packet.uptimeSeconds = snapshot.uptimeSeconds;
+    packet.effectiveHashrate = snapshot.effectiveHashrate;
     packet.lastSeenJobSeq = currentJobSeq_;
+    packet.capabilities = localSlaveCapabilities();
+    packet.temperatureDeciC = localTemperatureDeciC();
+    packet.cpuFrequencyMhz = localCpuFrequencyMhz();
+    packet.uptimeSeconds = millis() / 1000UL;
     strncpy(packet.lastError, snapshot.lastError, sizeof(packet.lastError) - 1);
     esp_now_send(masterMac_, reinterpret_cast<const uint8_t*>(&packet), sizeof(packet));
   }
 
-  void sendResult(bool found, uint32_t foundNonce, float foundDifficulty) {
+  void sendDeliveryAck(PacketType ackedType, AckDisposition disposition,
+                       uint32_t jobSeq, uint32_t assignmentId) {
     if (!paired_ || !radioStarted_ || !ensureMasterPeer()) return;
+    DeliveryAckPacket packet = {};
+    fillHeader(packet.header, PacketType::DeliveryAck);
+    packet.ackedType = static_cast<uint8_t>(ackedType);
+    packet.disposition = static_cast<uint8_t>(disposition);
+    packet.jobSeq = jobSeq;
+    packet.assignmentId = assignmentId;
+    esp_now_send(masterMac_, reinterpret_cast<const uint8_t*>(&packet), sizeof(packet));
+  }
+
+  void sendPendingResult(uint32_t now) {
+    if (!pendingResultActive_ || !paired_ || !radioStarted_ || !ensureMasterPeer()) return;
+    if (pendingResultSendAttempts_ >= DELIVERY_RETRY_LIMIT) return;
+    if (pendingResultSendAttempts_ > 0 && now - pendingResultLastSentAtMs_ < DELIVERY_RETRY_MS) return;
+    if (pendingResultSendAttempts_ > 0) {
+      portENTER_CRITICAL(&mux_);
+      stats_.resultRetries++;
+      portEXIT_CRITICAL(&mux_);
+    }
+    pendingResultLastSentAtMs_ = now;
+    pendingResultSendAttempts_++;
+    esp_now_send(masterMac_, reinterpret_cast<const uint8_t*>(&pendingResultPacket_),
+                 sizeof(pendingResultPacket_));
+  }
+
+  void servicePendingResult(uint32_t now) {
+    if (!pendingResultActive_) return;
+    if (now - pendingResultCreatedAtMs_ >= RESULT_ACK_TIMEOUT_MS) {
+      pendingResultActive_ = false;
+      return;
+    }
+    sendPendingResult(now);
+  }
+
+  void sendResult(bool found, uint32_t foundNonce, float foundDifficulty) {
+    if (!paired_ || !radioStarted_) return;
+    const uint32_t now = millis();
+    const uint32_t activeElapsedMs = now - assignmentStartedAtMs_;
+    const uint32_t wallElapsedMs = lastResultSentAtMs_ == 0 ? activeElapsedMs : now - lastResultSentAtMs_;
+    const uint32_t effectiveHps = wallElapsedMs == 0 ? 0 : static_cast<uint32_t>((assignmentHashes_ * 1000ULL) / wallElapsedMs);
     WorkResultPacket packet = {};
     fillHeader(packet.header, PacketType::WorkResult);
     packet.jobSeq = currentJobSeq_;
     packet.assignmentId = currentAssignmentId_;
     packet.hashesDone = assignmentHashes_;
-    packet.elapsedMs = millis() - assignmentStartedAtMs_;
+    packet.elapsedMs = activeElapsedMs;
+    packet.wallElapsedMs = wallElapsedMs;
     packet.hashrate = packet.elapsedMs == 0 ? 0.0f : (assignmentHashes_ * 1000.0f) / packet.elapsedMs;
+    packet.effectiveHashrate = effectiveHps;
     packet.bestDifficulty = assignmentBest_;
     packet.found = found ? 1 : 0;
+    packet.capabilities = localSlaveCapabilities();
+    packet.temperatureDeciC = localTemperatureDeciC();
     packet.foundNonce = foundNonce;
     packet.foundDifficulty = foundDifficulty;
-    esp_now_send(masterMac_, reinterpret_cast<const uint8_t*>(&packet), sizeof(packet));
+    pendingResultPacket_ = packet;
+    pendingResultActive_ = true;
+    pendingResultCreatedAtMs_ = now;
+    pendingResultLastSentAtMs_ = 0;
+    pendingResultSendAttempts_ = 0;
+    sendPendingResult(now);
+    lastResultSentAtMs_ = now;
     debugPrintf("[ClusterSlave] result job=%lu assign=%lu hashes=%lu ms=%lu hps=%.1f found=%u\n",
                 static_cast<unsigned long>(packet.jobSeq),
                 static_cast<unsigned long>(packet.assignmentId),
@@ -1985,6 +2872,7 @@ private:
                 packet.found);
     portENTER_CRITICAL(&mux_);
     stats_.hashrate = static_cast<uint32_t>(packet.hashrate);
+    stats_.effectiveHashrate = packet.effectiveHashrate;
     stats_.totalHashes += assignmentHashes_;
     stats_.assignmentDone = assignmentHashes_;
     stats_.lastResultHashes = assignmentHashes_;
@@ -1995,13 +2883,56 @@ private:
   }
 
   void acceptWork(const WorkAssignPacket& packet) {
-    if (assignmentActive_ && packet.jobSeq == currentJobSeq_) {
+    if (assignmentActive_ && packet.assignmentId == currentAssignmentId_) {
+      sendDeliveryAck(PacketType::WorkAssign, AckDisposition::Active,
+                      packet.jobSeq, packet.assignmentId);
       return;
     }
+    if (pendingAssignmentActive_ && packet.assignmentId == pendingPacket_.assignmentId) {
+      sendDeliveryAck(PacketType::WorkAssign, AckDisposition::Queued,
+                      packet.jobSeq, packet.assignmentId);
+      return;
+    }
+    if (highestAssignmentIdSeen_ != 0) {
+      const int32_t delta = static_cast<int32_t>(packet.assignmentId - highestAssignmentIdSeen_);
+      if (delta <= 0) {
+        sendDeliveryAck(PacketType::WorkAssign, AckDisposition::Active,
+                        packet.jobSeq, packet.assignmentId);
+        return;
+      }
+    }
+    highestAssignmentIdSeen_ = packet.assignmentId;
+
+    if (assignmentActive_) {
+      pendingPacket_ = packet;
+      pendingAssignmentActive_ = true;
+      if (packet.jobSeq != currentJobSeq_) {
+        deactivateCurrentAssignment();
+      }
+      sendDeliveryAck(PacketType::WorkAssign, AckDisposition::Queued,
+                      packet.jobSeq, packet.assignmentId);
+      return;
+    }
+#if MICRI_CLUSTER_DUAL_SLAVE_WORKER
+    if (activeWorkerCount() != 0) {
+      pendingPacket_ = packet;
+      pendingAssignmentActive_ = true;
+      sendDeliveryAck(PacketType::WorkAssign, AckDisposition::Queued,
+                      packet.jobSeq, packet.assignmentId);
+      return;
+    }
+#endif
+    beginAssignment(packet);
+    sendDeliveryAck(PacketType::WorkAssign, AckDisposition::Active,
+                    packet.jobSeq, packet.assignmentId);
+  }
+
+  void beginAssignment(const WorkAssignPacket& packet) {
     currentWork_ = WorkContext();
     memcpy(currentWork_.header, packet.blockHeader, sizeof(currentWork_.header));
     preparePaddedWork(currentWork_);
     currentWork_.ready = true;
+    currentWork_.jobSeq = packet.jobSeq;
     currentJobSeq_ = packet.jobSeq;
     currentAssignmentId_ = packet.assignmentId;
     assignmentStartNonce_ = packet.nonceStart;
@@ -2011,13 +2942,29 @@ private:
     assignmentStartedAtMs_ = millis();
     assignmentHashes_ = 0;
     assignmentBest_ = 0.0f;
+#if MICRI_CLUSTER_DUAL_SLAVE_WORKER
+    const uint32_t previousHashrate = stats_.hashrate > 0 ? stats_.hashrate : stats_.effectiveHashrate;
+    const uint32_t cancelStride = cancellationCheckStrideForHashrate(previousHashrate);
+    portENTER_CRITICAL(&workMux_);
+    dualNextNonce_ = packet.nonceStart;
+    dualFound_ = false;
+    dualFoundNonce_ = 0;
+    dualFoundDifficulty_ = 0.0f;
+    dualCancelCheckMask_ = cancelStride - 1;
     assignmentActive_ = true;
+#else
+    assignmentActive_ = true;
+#endif
+#if MICRI_CLUSTER_DUAL_SLAVE_WORKER
+    portEXIT_CRITICAL(&workMux_);
+#endif
     portENTER_CRITICAL(&mux_);
     stats_.jobs++;
     stats_.currentJobSeq = currentJobSeq_;
     stats_.currentAssignmentId = currentAssignmentId_;
     stats_.assignmentSize = assignmentNonceCount_;
     stats_.assignmentDone = 0;
+    stats_.capabilities = localSlaveCapabilities();
     portEXIT_CRITICAL(&mux_);
     debugPrintf("[ClusterSlave] work job=%lu assign=%lu start=%lu count=%lu diff=%.6f\n",
                 static_cast<unsigned long>(currentJobSeq_),
@@ -2028,7 +2975,260 @@ private:
     setState(SlaveState::Mining);
   }
 
+  void startPendingIfReady() {
+    if (assignmentActive_ || !pendingAssignmentActive_) return;
+#if MICRI_CLUSTER_DUAL_SLAVE_WORKER
+    if (activeWorkerCount() != 0) return;
+#endif
+    WorkAssignPacket packet = pendingPacket_;
+    pendingAssignmentActive_ = false;
+    beginAssignment(packet);
+  }
+
+  void deactivateCurrentAssignment() {
+#if MICRI_CLUSTER_DUAL_SLAVE_WORKER
+    portENTER_CRITICAL(&workMux_);
+    assignmentActive_ = false;
+    portEXIT_CRITICAL(&workMux_);
+#else
+    assignmentActive_ = false;
+#endif
+  }
+
+  void cancelCurrentAssignment() {
+    deactivateCurrentAssignment();
+    pendingAssignmentActive_ = false;
+    clearLiveWorkStats();
+    setState(SlaveState::Paired);
+  }
+
+  void cancelAssignmentsExcept(uint32_t keepJobSeq) {
+    if (assignmentActive_ && currentJobSeq_ != keepJobSeq) {
+      deactivateCurrentAssignment();
+    }
+    if (pendingAssignmentActive_ && pendingPacket_.jobSeq != keepJobSeq) {
+      pendingAssignmentActive_ = false;
+    }
+    if (!assignmentActive_ && !pendingAssignmentActive_) {
+      clearLiveWorkStats();
+      setState(SlaveState::Paired);
+    }
+  }
+
+#if MICRI_CLUSTER_DUAL_SLAVE_WORKER
+  uint8_t activeWorkerCount() {
+    portENTER_CRITICAL(&workMux_);
+    const uint8_t count = dualWorkersActive_;
+    portEXIT_CRITICAL(&workMux_);
+    return count;
+  }
+
+  static uint32_t roundDownPowerOfTwo(uint32_t value) {
+    uint32_t power = 1;
+    while ((power << 1) != 0 && (power << 1) <= value) {
+      power <<= 1;
+    }
+    return power;
+  }
+
+  static uint32_t cancellationCheckStrideForHashrate(uint32_t hashrate) {
+    static constexpr uint32_t MIN_STRIDE = 1024;
+    static constexpr uint32_t MAX_STRIDE = 65536;
+    static constexpr uint32_t TARGET_CHECK_MS = 50;
+    uint32_t target = hashrate == 0 ? 4096 : static_cast<uint32_t>((static_cast<uint64_t>(hashrate) * TARGET_CHECK_MS) / 1000ULL);
+    if (target < MIN_STRIDE) target = MIN_STRIDE;
+    if (target > MAX_STRIDE) target = MAX_STRIDE;
+    return roundDownPowerOfTwo(target);
+  }
+
+  static void copyPreparedWork(const WorkContext& source, WorkContext& target) {
+    memcpy(target.header, source.header, sizeof(target.header));
+    memcpy(target.paddedHeader, source.paddedHeader, sizeof(target.paddedHeader));
+    memcpy(target.midstate, source.midstate, sizeof(target.midstate));
+    memcpy(target.bake, source.bake, sizeof(target.bake));
+#if defined(CONFIG_IDF_TARGET_ESP32)
+    memcpy(target.hwWords, source.hwWords, sizeof(target.hwWords));
+#endif
+    target.jobSeq = source.jobSeq;
+    target.ready = source.ready;
+  }
+
+  bool claimDualChunk(WorkContext& work, uint32_t& startNonce, uint32_t& nonceCount,
+                      uint32_t& assignmentId, float& poolDifficulty) {
+    bool claimed = false;
+    portENTER_CRITICAL(&workMux_);
+    if (assignmentActive_ && !dualFound_) {
+      const uint32_t consumed = dualNextNonce_ - assignmentStartNonce_;
+      if (consumed < assignmentNonceCount_) {
+        const uint32_t remaining = assignmentNonceCount_ - consumed;
+        nonceCount = min<uint32_t>(SLAVE_BATCH_NONCES, remaining);
+        startNonce = dualNextNonce_;
+        dualNextNonce_ += nonceCount;
+        assignmentId = currentAssignmentId_;
+        poolDifficulty = assignmentPoolDifficulty_;
+        copyPreparedWork(currentWork_, work);
+        dualWorkersActive_++;
+        claimed = true;
+      }
+    }
+    portEXIT_CRITICAL(&workMux_);
+    return claimed;
+  }
+
+  bool assignmentStillCurrent(uint32_t assignmentId) {
+    bool current = false;
+    portENTER_CRITICAL(&workMux_);
+    current = assignmentActive_ && currentAssignmentId_ == assignmentId && !dualFound_;
+    portEXIT_CRITICAL(&workMux_);
+    return current;
+  }
+
+  void noteDualProgress(uint32_t assignmentId, uint32_t processed, float bestDifficulty,
+                        bool found, uint32_t foundNonce, float foundDifficulty) {
+    uint32_t hashes = 0;
+    float best = 0.0f;
+    uint32_t elapsed = 0;
+    bool accepted = false;
+    portENTER_CRITICAL(&workMux_);
+    if (dualWorkersActive_ > 0) dualWorkersActive_--;
+    if (currentAssignmentId_ == assignmentId && (assignmentActive_ || dualFound_)) {
+      assignmentHashes_ += processed;
+      if (bestDifficulty > assignmentBest_) assignmentBest_ = bestDifficulty;
+      if (found && !dualFound_) {
+        dualFound_ = true;
+        dualFoundNonce_ = foundNonce;
+        dualFoundDifficulty_ = foundDifficulty;
+      }
+      hashes = assignmentHashes_;
+      best = assignmentBest_;
+      elapsed = millis() - assignmentStartedAtMs_;
+      accepted = true;
+    }
+    portEXIT_CRITICAL(&workMux_);
+
+    if (!accepted || elapsed == 0) return;
+    portENTER_CRITICAL(&mux_);
+    stats_.hashrate = static_cast<uint32_t>(hashes * 1000ULL / elapsed);
+    stats_.assignmentDone = hashes;
+    if (best > stats_.bestDifficulty) stats_.bestDifficulty = best;
+    portEXIT_CRITICAL(&mux_);
+  }
+
+  bool processDualWorkerChunk(bool secondary) {
+    WorkContext work;
+    uint32_t startNonce = 0;
+    uint32_t nonceCount = 0;
+    uint32_t assignmentId = 0;
+    float poolDifficulty = 0.0f;
+    uint32_t cancelCheckMask = 0x3FF;
+    if (!claimDualChunk(work, startNonce, nonceCount, assignmentId, poolDifficulty)) {
+      return false;
+    }
+    portENTER_CRITICAL(&workMux_);
+    cancelCheckMask = dualCancelCheckMask_;
+    portEXIT_CRITICAL(&workMux_);
+
+    uint8_t hash[32];
+    uint32_t processed = 0;
+    float localBest = 0.0f;
+    bool found = false;
+    uint32_t foundNonce = 0;
+    float foundDifficulty = 0.0f;
+
+#if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
+    const bool hardwareWorker = !secondary;
+#endif
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+    bool hardwareReady = false;
+    uint32_t hardwareMidstate[8] = {};
+    uint8_t hardwareReference[32] = {};
+    if (hardwareWorker) {
+      // mbedTLS can use the same SHA peripheral, so calculate the one-time
+      // reference before taking the low-level hardware lock.
+      uint8_t referenceHeader[80];
+      memcpy(referenceHeader, work.paddedHeader, sizeof(referenceHeader));
+      memcpy(referenceHeader + 76, &startNonce, sizeof(startNonce));
+      doubleSha(referenceHeader, sizeof(referenceHeader), hardwareReference);
+      esp_sha_acquire_hardware();
+      prepareHardwareMidstateS3Unlocked(work, hardwareMidstate);
+      hardwareReady = validateHardwareS3Unlocked(work, hardwareMidstate, startNonce, hardwareReference);
+    }
+#elif defined(CONFIG_IDF_TARGET_ESP32)
+    if (hardwareWorker) esp_sha_lock_engine(SHA2_256);
+#else
+    (void)secondary;
+#endif
+
+    for (uint32_t i = 0; i < nonceCount && !stopRequested_; i++) {
+      if ((i & cancelCheckMask) == 0 && !assignmentStillCurrent(assignmentId)) break;
+      const uint32_t nonce = startNonce + i;
+      processed++;
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+      const bool candidate = hardwareReady
+          ? hashNonceHardwareS3Unlocked(work, hardwareMidstate, nonce, hash)
+          : hashNonceSoftwarePrepared(work, nonce, hash);
+#elif defined(CONFIG_IDF_TARGET_ESP32)
+      const bool candidate = hardwareWorker
+          ? hashNonceHardwareEsp32Unlocked(work, nonce, hash)
+          : hashNonceSoftwarePrepared(work, nonce, hash);
+#else
+      const bool candidate = hashNonceSoftwarePrepared(work, nonce, hash);
+#endif
+      if (candidate) {
+        const float diff = difficultyFromHash(hash);
+        if (diff > localBest) localBest = diff;
+        if (diff > poolDifficulty) {
+          found = true;
+          foundNonce = nonce;
+          foundDifficulty = diff;
+          break;
+        }
+      }
+    }
+
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+    if (hardwareWorker) esp_sha_release_hardware();
+#elif defined(CONFIG_IDF_TARGET_ESP32)
+    if (hardwareWorker) esp_sha_unlock_engine(SHA2_256);
+#endif
+
+    noteDualProgress(assignmentId, processed, localBest, found, foundNonce, foundDifficulty);
+    return processed > 0;
+  }
+
+  bool finishDualAssignmentIfReady() {
+    bool complete = false;
+    bool found = false;
+    uint32_t foundNonce = 0;
+    float foundDifficulty = 0.0f;
+
+    portENTER_CRITICAL(&workMux_);
+    if (assignmentActive_) {
+      const uint32_t consumed = dualNextNonce_ - assignmentStartNonce_;
+      const bool exhausted = consumed >= assignmentNonceCount_;
+      complete = (dualFound_ || exhausted) && dualWorkersActive_ == 0;
+      if (complete) {
+        found = dualFound_;
+        foundNonce = dualFoundNonce_;
+        foundDifficulty = dualFoundDifficulty_;
+        assignmentActive_ = false;
+      }
+    }
+    portEXIT_CRITICAL(&workMux_);
+
+    if (!complete) return false;
+    sendResult(found, foundNonce, foundDifficulty);
+    setState(SlaveState::Paired);
+    return true;
+  }
+#endif
+
   void mineChunk() {
+#if MICRI_CLUSTER_DUAL_SLAVE_WORKER
+    processDualWorkerChunk(false);
+    finishDualAssignmentIfReady();
+    return;
+#else
     uint8_t hash[32];
     uint32_t processed = 0;
 #if defined(CONFIG_IDF_TARGET_ESP32)
@@ -2080,8 +3280,9 @@ private:
       if (assignmentBest_ > stats_.bestDifficulty) stats_.bestDifficulty = assignmentBest_;
       portEXIT_CRITICAL(&mux_);
     }
-#if !defined(CONFIG_IDF_TARGET_ESP32)
+#if !MICRI_CLUSTER_SLAVE_TASK_ENABLED
     delay(1);
+#endif
 #endif
   }
 
@@ -2124,22 +3325,48 @@ private:
   uint32_t lastMasterSeenMs_ = 0;
   uint32_t lastHelloAtMs_ = 0;
   uint32_t lastStatusAtMs_ = 0;
-  bool assignmentActive_ = false;
+  uint32_t lastServiceAtMs_ = 0;
+  uint32_t lastDiagnosticsAtMs_ = 0;
+  volatile bool assignmentActive_ = false;
+  bool pendingAssignmentActive_ = false;
+  WorkAssignPacket pendingPacket_ = {};
   WorkContext currentWork_;
   uint32_t currentJobSeq_ = 0;
+  uint32_t masterSessionId_ = 0;
+  uint32_t highestAssignmentIdSeen_ = 0;
   uint32_t currentAssignmentId_ = 0;
   uint32_t assignmentStartNonce_ = 0;
   uint32_t assignmentNonceCount_ = 0;
   uint32_t assignmentNextNonce_ = 0;
   uint32_t assignmentStartedAtMs_ = 0;
   uint32_t assignmentHashes_ = 0;
+  uint32_t lastResultSentAtMs_ = 0;
   float assignmentPoolDifficulty_ = 0.0f;
   float assignmentBest_ = 0.0f;
+  bool pendingResultActive_ = false;
+  WorkResultPacket pendingResultPacket_ = {};
+  uint32_t pendingResultCreatedAtMs_ = 0;
+  uint32_t pendingResultLastSentAtMs_ = 0;
+  uint8_t pendingResultSendAttempts_ = 0;
   SlaveStats stats_;
   portMUX_TYPE mux_ = portMUX_INITIALIZER_UNLOCKED;
-#if defined(CONFIG_IDF_TARGET_ESP32)
+  QueueHandle_t rxQueue_ = nullptr;
+#if MICRI_CLUSTER_SLAVE_TASK_ENABLED
   TaskHandle_t task_ = nullptr;
   volatile bool stopRequested_ = false;
+#endif
+#if MICRI_CLUSTER_DUAL_SLAVE_WORKER
+#if MICRI_CLUSTER_SECONDARY_SOFTWARE_WORKER
+  TaskHandle_t secondaryTask_ = nullptr;
+  volatile bool secondaryStopRequested_ = false;
+#endif
+  uint8_t dualWorkersActive_ = 0;
+  uint32_t dualNextNonce_ = 0;
+  bool dualFound_ = false;
+  uint32_t dualFoundNonce_ = 0;
+  float dualFoundDifficulty_ = 0.0f;
+  uint32_t dualCancelCheckMask_ = 0x0FFF;
+  portMUX_TYPE workMux_ = portMUX_INITIALIZER_UNLOCKED;
 #endif
 };
 

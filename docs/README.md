@@ -15,4 +15,5 @@ Focused docs for MicriOS setup, flashing, and larger app workflows.
 - [Main README](../README.md)
 - [Release notes](../RELEASE_NOTES.md)
 - [Headless C3 README](../MicriOS-C3-Headless/README.md)
+- [Headless S3-Zero README](../MicriOS-S3-Zero-Headless/README.md)
 - [NerdMiner_v2 MIT notice](../licenses/NerdMiner_v2-MIT.txt)

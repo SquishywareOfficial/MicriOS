@@ -6,5 +6,7 @@ MicriOS-T-Display/build/
 MicriOS-T-Display/src/shared/
 MicriOS-C3-Headless/build/
 MicriOS-C3-Headless/src/shared/
+MicriOS-S3-Zero-Headless/build/
+MicriOS-S3-Zero-Headless/src/shared/
 dist/
 site/
