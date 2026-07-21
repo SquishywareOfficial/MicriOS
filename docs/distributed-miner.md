@@ -59,7 +59,13 @@ Pairing uses the master's MAC address plus a persisted cluster ID. Resetting the
 
 ### T-Display
 
-Open **Distributed Miner**, choose **Master** or **Slave**, then start.
+Open **Distributed Miner** to go directly to its saved **Master** or **Slave**
+dashboard. The role is remembered across app exits and device restarts. Use the
+**Miner Role** page to switch roles; the new choice is saved immediately.
+
+Entering the saved Master dashboard does not automatically start the cluster.
+Start/stop remains an explicit action. Entering the Slave dashboard starts its
+ESP-NOW listener so it can reconnect to its saved master and accept work.
 
 T-Display can act as:
 
@@ -85,15 +91,22 @@ See [../MicriOS-C3-Headless/README.md](../MicriOS-C3-Headless/README.md) for the
 ### ESP32-S3-Zero Headless
 
 Flash the `MicriOS-S3-Zero-Headless` build for ESP32-S3-Zero boards with no
-screen. Fresh boards default directly into Slave Miner so a powered cluster node
-can immediately search for a Distributed Miner master.
+screen. It is a dedicated appliance build that boots directly into Slave Miner;
+it does not contain the headless app launcher or Mouse Emulator.
 
 The S3-Zero build uses BOOT on `GPIO0`, treats the onboard WS2812 on `GPIO21`
-as a blue status LED, and uses the ESP32-S3 SHA peripheral from a core-1 worker.
+as a full RGB status LED, and uses the ESP32-S3 SHA peripheral from a core-1 worker.
 A core-0 baked-software helper is enabled by default and can be disabled for
 A/B testing. It advertises fast/hardware/dual-worker capability to the master,
 receives larger nonce assignments than the C3 headless build, and can buffer
 one queued next assignment to reduce idle time between batches.
+
+The hardware worker derives a SHA-peripheral-format midstate separately from
+the baked software midstate. Its one-time complete reference hash is calculated
+before the peripheral lock is taken, then compared with the first hardware
+digest. On the first tested S3FH4R2 board this reached about `159 KH/s` raw and
+`122-129 KH/s` effective in a short run; longer A/B and six-node measurements
+remain part of the validation checklist.
 
 See [../MicriOS-S3-Zero-Headless/README.md](../MicriOS-S3-Zero-Headless/README.md)
 for S3-Zero LED, BOOT, compile, and upload details.
@@ -110,20 +123,49 @@ for S3-Zero LED, BOOT, compile, and upload details.
 8. Wait for slaves to appear in the slave list.
 9. Turn **Local Mining** on or off depending on whether the master should also hash.
 
+Fresh T-Display masters default local mining to **off** so the display board can
+concentrate on Stratum, ESP-NOW coordination, and the dashboard. A previously
+saved `cluster/local` choice is preserved.
+
+The master persists its cluster ID, and each slave persists the master's MAC
+address and cluster ID. The master's visible slave list is intentionally kept
+in RAM: after a restart, remembered slaves hear the master's new session beacon,
+send hello/status packets, and repopulate the list. This avoids restoring stale
+slave records for devices that are no longer present.
+
 ## T-Display Master Controls
 
 - **Dashboard**: Button 1 starts/stops the cluster. Button 2 changes page.
 - **Pair Slaves**: Button 1 starts pairing.
 - **Cluster Control**: Button 1 toggles local mining. Button 1 hold starts/stops the cluster.
+- **Miner Role**: Button 1 switches to Slave mode and saves the choice.
+- **Display Layout**: Button 1 switches between the normal `240x135` landscape
+  dashboard and a saved `135x240` portrait dashboard. Portrait can show all
+  eight supported slave rows at once.
 - **Reset Cluster**: Button 1 resets the cluster ID. Slaves must pair again.
 - Button 2 hold exits to the MicriOS menu.
 
 ## T-Display Slave Controls
 
 - Button 2 changes status/detail pages.
+- **Miner Role**: Button 1 switches to Master mode and saves the choice.
 - **Clear Pairing**: Button 1 hold forgets the saved master.
 - **Exit Slave**: Button 1 hold exits to the MicriOS menu.
 - Button 2 hold also exits to the menu.
+
+## Clearing Saved Cluster State
+
+T-Display **Save Manager** exposes two separate entries because they own
+different data:
+
+- **Cluster** clears the master cluster ID/local-mining choice or, when the
+  device has acted as a slave, its saved master MAC and cluster ID.
+- **Cluster App** clears the T-Display app's saved Master/Slave role and display
+  orientation. The next launch defaults to Master in landscape.
+
+Clearing **All** clears both namespaces. Clearing state on the master does not
+erase pairing stored on slave devices; reset or clear those slaves as well when
+starting an entirely new cluster.
 
 ## Headless C3 LED And Button
 
@@ -145,25 +187,22 @@ The tested GPIO8 LED is active-low. Other boards may need LED polarity changes.
 
 ## Headless S3-Zero LED And Button
 
-The S3-Zero headless target uses BOOT on `GPIO0` and an onboard WS2812 RGB LED
-on `GPIO21`. MicriOS drives that RGB LED as a blue status light.
+The dedicated S3-Zero target uses BOOT on `GPIO0` and an onboard WS2812 RGB LED
+on `GPIO21`:
 
-Fresh boards boot straight into Slave Miner. Hold BOOT for about five seconds to
-return to the LED menu.
+- Brief white: boot/self-test.
+- Slow red pulse: no master paired; searching.
+- Slow amber pulse: saved master unavailable or stale; reconnecting.
+- Solid blue: paired and awaiting work.
+- Solid green: actively or recently mining.
+- Fast red flash: error.
+- Brief purple: engine restarted.
+- Three cyan flashes: pairing cleared.
 
-For Slave Miner:
-
-- App marker: LED on, two short blinks, LED on again, short off gap.
-- Solid LED for up to 5 seconds: actively or recently mining.
-- Slow blink for up to 5 seconds: searching / not paired.
-- Very slow blink for up to 5 seconds: paired but idle.
-- Fast blink for up to 5 seconds: error.
-- 2 taps: make Slave Miner the saved autolaunch app.
-- 3 taps: clear saved master/cluster pairing.
-- Hold BOOT for about five seconds: exit to the LED menu.
-
-In the LED menu, 2 taps clears the saved autolaunch app. On S3-Zero, that means
-the board returns to its factory behavior of booting straight into Slave Miner.
+A single tap enables or disables all informational LED output and saves the
+choice across restarts. Two taps deliberately do nothing. Triple-tap clears
+pairing. Holding BOOT for five seconds restarts the miner engine without
+clearing pairing. Serial status remains active while the LED is disabled.
 
 ## Serial Debug
 
@@ -179,12 +218,18 @@ cluster local on
 cluster local off
 ```
 
-`cluster stats` prints total, local, and slave hashrate, slave count, jobs, submitted/accepted/rejected shares, channel, and last error.
+`cluster stats` prints total, local, and slave hashrate, slave count, jobs,
+submitted/accepted/rejected shares, channel, master RX queue drops, assignment
+delivery retries, free heap, task stack watermark, and the last error.
 
-Headless C3 and S3-Zero serial also run at `115200` baud and print status every two seconds:
+When the T-Display runs as a slave, its two-second serial line reports raw and
+effective hashrate, assignment progress, RX queue drops, result retries, idle
+time, free heap, and worker stack watermark.
+
+Headless C3 and S3-Zero serial also run at `115200` baud and print status every two seconds. The S3 line includes raw/effective rate, SHA mode, assignment progress, queue drops, result retries, idle time, heap, worker stack watermarks, and temperature:
 
 ```text
-[headless] build=<build> state=<state> paired=<yes/no> channel=<n> khps=<rate> jobs=<jobs> completed=<count> total_kh=<hashes>
+[s3zero] build=<build> state=<state> paired=<yes/no> ch=<n> raw_khps=<rate> effective_khps=<rate> sha=<mode> assign=<id> progress=<done>/<size> rx_drop=<n> result_retry=<n> idle_ms=<n> led=<on/off>
 ```
 
 ## Clearing Saved Cluster Data

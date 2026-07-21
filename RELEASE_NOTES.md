@@ -2,11 +2,21 @@
 
 ## v3.0 b86
 
-- Added `MicriOS-S3-Zero-Headless` for ESP32-S3-Zero no-screen boards with BOOT on `GPIO0` and onboard WS2812 status LED on `GPIO21`.
-- Made the S3-Zero headless build default straight into Distributed Miner Slave Miner mode on fresh boards.
+- Added dedicated `MicriOS-S3-Zero-Headless` Distributed Miner slave firmware
+  for ESP32-S3FH4R2 boards, with BOOT on `GPIO0`, QSPI PSRAM configuration, and
+  no Bluetooth/app-launcher overhead.
+- Added WS2812 RGB state colors for boot, unpaired search, stale-master
+  reconnect, paired idle, active mining, errors, engine restart, and pairing
+  reset acknowledgements.
+- Added a persistent single-tap status-LED toggle to S3-Zero slaves so clustered
+  nodes can remain completely dark without losing serial diagnostics.
 - Added an ESP32-S3 register-level hardware SHA worker with a first-use
   software cross-check and automatic software fallback; the optional core-0
   baked-software helper remains available for measured A/B testing.
+- Fixed S3 hardware validation so it derives the SHA peripheral's native
+  midstate separately from the software miner and computes its full reference
+  hash before taking the non-recursive SHA lock. First-board testing now reaches
+  hardware mode at about 159 KH/s raw and 122-129 KH/s effective.
 - Tuned the distributed miner slave engine so ESP32-S3 targets advertise fast/hardware/dual-worker capability, accept larger nonce assignments, and buffer one queued assignment so the master can prefetch the next batch before the current one finishes.
 - Added effective hashrate reporting for prefetched slave work so the master can distinguish raw hashing speed from assignment/ESP-NOW overhead.
 - Tuned S3 slave cancellation checks from observed hashrate so high-speed slaves do less hot-loop polling while still responding to new jobs/cancels on a bounded cadence.
@@ -16,6 +26,20 @@
   delayed packets cannot replace or cancel current work.
 - Added cooperative worker delays so the headless S3 miner does not starve
   WiFi, idle/watchdog, serial, LED, or BOOT processing while hashing.
+- Added local miner diagnostics for queue drops, delivery/result retries,
+  paired idle time, assignment progress, heap, worker stack watermarks, and S3
+  temperature without enlarging the ESP-NOW protocol packets.
+- Added a saved T-Display Distributed Miner portrait dashboard for upright
+  USB-down cluster masters, including all eight slave rows, while keeping the
+  rest of MicriOS landscape.
+- Made the T-Display Distributed Miner remember its Master/Slave role and open
+  directly on that role's dashboard; added an in-app Role page and a separate
+  `Cluster App` Save Manager entry for clearing role/orientation preferences.
+- Documented the persistent cluster handshake: masters retain their cluster ID,
+  slaves retain the master MAC/cluster ID, and the live master slave list safely
+  repopulates after restart instead of restoring stale records.
+- Made fresh T-Display cluster masters default local mining off so the master
+  can prioritize pool, ESP-NOW, and UI work; existing saved settings are kept.
 - Added S3-Zero build, release packaging, web flasher manifest, and documentation entries.
 
 ## v3.0 b85

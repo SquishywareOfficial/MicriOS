@@ -7,9 +7,8 @@ Mouse Emulator is MicriOS's Bluetooth HID mouse utility. It advertises as a real
 - MicriOS for C3
 - MicriOS for T-Display
 - MicriOS for C3 Headless
-- MicriOS for S3-Zero Headless
 
-The headless C3 and S3-Zero builds include a no-screen Mouse Emulator app with fixed Logitech identity and LED/button controls.
+The headless C3 build includes a no-screen Mouse Emulator app with fixed Logitech identity and LED/button controls. The S3-Zero headless target is now a dedicated Distributed Miner slave and does not include Bluetooth.
 
 ## Device Profiles
 
@@ -61,7 +60,7 @@ While running:
 - Button 1: toggle movement active/paused.
 - Button 2 hold: exit to menu and stop Bluetooth advertising.
 
-### MicriOS for C3 / S3-Zero Headless
+### MicriOS for C3 Headless
 
 Headless builds always use the Logitech profile and have no profile picker.
 
@@ -94,8 +93,7 @@ The T-Display version shows:
 - countdown to next movement
 - last movement distance
 
-The headless version uses LED cycles. C3 SuperMini boards use the GPIO8 LED;
-S3-Zero boards use the onboard WS2812 on GPIO21 as a blue status LED.
+The headless C3 version uses GPIO8 LED cycles.
 
 - App marker: LED on, one short blink, LED on again, short off gap.
 - Solid on for 5 seconds: connected and active.

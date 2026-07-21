@@ -55,10 +55,10 @@ For fallback flashing commands, browser requirements, and release asset details,
 - ESP32-S3-Zero style board with no display.
 - BOOT button on `GPIO0`.
 - Onboard WS2812 RGB LED on `GPIO21`.
-- Defaults straight into Distributed Miner slave mode on fresh boards.
+- Dedicated firmware boots straight into Distributed Miner slave mode.
 - Uses the ESP32-S3 hardware SHA accelerator, larger nonce batches, reliable
   assignment/result acknowledgements, and an optional core-0 software helper.
-- LED/button launcher still includes Mouse Emulator and Slave Miner apps.
+- RGB states show searching, reconnecting, paired, mining, and error at a glance.
 
 ### TENSTAR / LilyGO-Style T-Display ESP32
 
@@ -93,7 +93,7 @@ Radio and network utilities:
 - **ESP Contacts** exchanges saved initials over ESP-NOW and stores peer MAC addresses.
 - **Communicator** sends predefined ESP-NOW messages to **ALL** or a saved contact.
 - **Micri Miner** is a solo Stratum miner with wallet/pool setup. See the [Micri Miner guide](docs/micri-miner.md).
-- **Distributed Miner** lets one screened board coordinate nearby ESP-NOW mining slaves. See the [Distributed Miner guide](docs/distributed-miner.md).
+- **Distributed Miner** lets one screened board coordinate nearby ESP-NOW mining slaves. The T-Display master supports a saved portrait dashboard for upright cluster use. See the [Distributed Miner guide](docs/distributed-miner.md).
 
 Device settings and save data can be managed from **Options / Save Manager**. Save Manager can clear individual app data such as scores, contacts, WiFi profiles, miner settings, miner lifetime stats, and cluster pairing data.
 

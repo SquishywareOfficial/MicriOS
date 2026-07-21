@@ -104,6 +104,10 @@ constexpr uint16_t SLAVE_BATCH_NONCES = MICRI_CLUSTER_SLAVE_BATCH_NONCES;
 #define MICRI_CLUSTER_S3_SOFTWARE_WORKER 1
 #endif
 
+#ifndef MICRI_CLUSTER_DEFAULT_LOCAL_MINING
+#define MICRI_CLUSTER_DEFAULT_LOCAL_MINING 1
+#endif
+
 #if defined(CONFIG_IDF_TARGET_ESP32S3) && MICRI_CLUSTER_SLAVE_TASK_ENABLED
 #define MICRI_CLUSTER_DUAL_SLAVE_WORKER 1
 #else
@@ -185,7 +189,7 @@ struct MinerConfig {
 };
 
 struct ClusterConfig {
-  bool localMining = true;
+  bool localMining = MICRI_CLUSTER_DEFAULT_LOCAL_MINING != 0;
   uint32_t clusterId = 0;
 };
 
@@ -372,7 +376,7 @@ struct SlaveRecord {
 
 struct MasterStats {
   MasterState state = MasterState::Idle;
-  bool localMining = true;
+  bool localMining = MICRI_CLUSTER_DEFAULT_LOCAL_MINING != 0;
   bool pairing = false;
   uint8_t channel = 0;
   uint8_t slaveCount = 0;
@@ -390,6 +394,10 @@ struct MasterStats {
   uint32_t uptimeSeconds = 0;
   uint32_t retryCount = 0;
   uint32_t retryInSeconds = 0;
+  uint32_t rxQueueDrops = 0;
+  uint32_t deliveryRetries = 0;
+  uint32_t freeHeap = 0;
+  uint32_t taskStackHighWater = 0;
   char ssid[33] = "";
   char lastError[72] = "";
 };
@@ -412,6 +420,12 @@ struct SlaveStats {
   float bestDifficulty = 0.0f;
   uint32_t uptimeSeconds = 0;
   uint8_t capabilities = 0;
+  uint32_t rxQueueDrops = 0;
+  uint32_t resultRetries = 0;
+  uint32_t idleMs = 0;
+  uint32_t freeHeap = 0;
+  uint32_t taskStackHighWater = 0;
+  uint32_t secondaryStackHighWater = 0;
   char lastError[48] = "";
   uint8_t masterMac[6] = {};
 };
@@ -509,7 +523,7 @@ public:
   void load() {
     Preferences prefs;
     prefs.begin(CLUSTER_PREF_NS, false);
-    config_.localMining = prefs.getBool("local", true);
+    config_.localMining = prefs.getBool("local", MICRI_CLUSTER_DEFAULT_LOCAL_MINING != 0);
     config_.clusterId = prefs.getUInt("id", 0);
     if (config_.clusterId == 0) {
       config_.clusterId = esp_random();
@@ -712,10 +726,21 @@ inline void transformS3Digest(const uint8_t raw[32], uint8_t out[32], uint8_t mo
   }
 }
 
-inline bool hashNonceHardwareS3RawUnlocked(const WorkContext& source, uint32_t nonce,
-                                            uint8_t raw[32], bool candidateOnly) {
+inline void prepareHardwareMidstateS3Unlocked(const WorkContext& source, uint32_t midstate[8]) {
+  // The SHA peripheral's digest representation is not the same as the baked
+  // software miner midstate. Generate it once per claimed worker chunk using
+  // the same hardware path that will continue the second header block.
   REG_WRITE(SHA_MODE_REG, SHA2_256);
-  shaWriteDigestS3(source.midstate);
+  sha_ll_fill_text_block(source.paddedHeader, 64 / sizeof(uint32_t));
+  sha_ll_start_block(SHA2_256);
+  shaWaitIdleS3();
+  sha_ll_read_digest(SHA2_256, midstate, 8);
+}
+
+inline bool hashNonceHardwareS3RawUnlocked(const WorkContext& source, const uint32_t midstate[8],
+                                            uint32_t nonce, uint8_t raw[32], bool candidateOnly) {
+  REG_WRITE(SHA_MODE_REG, SHA2_256);
+  shaWriteDigestS3(midstate);
   shaFillUpperS3(source.paddedHeader + 64, nonce);
   REG_WRITE(SHA_CONTINUE_REG, 1);
   sha_ll_load(SHA2_256);
@@ -737,17 +762,18 @@ inline bool& s3HardwareDisabled() {
   return disabled;
 }
 
-inline bool validateHardwareS3Unlocked(const WorkContext& source, uint32_t nonce) {
+inline bool validateHardwareS3Unlocked(const WorkContext& source, const uint32_t midstate[8], uint32_t nonce,
+                                        const uint8_t referenceHash[32]) {
   if (s3HardwareDisabled()) return false;
   if (s3HardwareDigestMode() >= 0) return true;
 
   uint8_t raw[32];
   uint8_t software[32];
-  if (!hashNonceHardwareS3RawUnlocked(source, nonce, raw, false) ||
-      !hashNonceSoftware(source, nonce, software)) {
+  if (!hashNonceHardwareS3RawUnlocked(source, midstate, nonce, raw, false)) {
     s3HardwareDisabled() = true;
     return false;
   }
+  memcpy(software, referenceHash, sizeof(software));
 
   for (uint8_t mode = 0; mode < 4; mode++) {
     uint8_t candidate[32];
@@ -764,12 +790,12 @@ inline bool validateHardwareS3Unlocked(const WorkContext& source, uint32_t nonce
   return false;
 }
 
-inline bool hashNonceHardwareS3Unlocked(const WorkContext& source, uint32_t nonce,
+inline bool hashNonceHardwareS3Unlocked(const WorkContext& source, const uint32_t midstate[8], uint32_t nonce,
                                          uint8_t hash[32]) {
   if (s3HardwareDisabled() || s3HardwareDigestMode() < 0) return false;
   uint8_t raw[32];
   const bool directOrder = s3HardwareDigestMode() == 0;
-  if (!hashNonceHardwareS3RawUnlocked(source, nonce, raw, directOrder)) return false;
+  if (!hashNonceHardwareS3RawUnlocked(source, midstate, nonce, raw, directOrder)) return false;
   transformS3Digest(raw, hash, static_cast<uint8_t>(s3HardwareDigestMode()));
   if (!directOrder) {
     uint32_t last;
@@ -1183,6 +1209,9 @@ private:
     event.length = static_cast<uint16_t>(len);
     memcpy(event.data, data, event.length);
     if (xQueueSend(rxQueue_, &event, 0) != pdTRUE) {
+      portENTER_CRITICAL(&mux_);
+      stats_.rxQueueDrops++;
+      portEXIT_CRITICAL(&mux_);
       debugPrintf("[ClusterMaster] RX queue full\n");
     }
   }
@@ -1584,6 +1613,12 @@ private:
     memcpy(packet.blockHeader, currentWork_.header, sizeof(packet.blockHeader));
     if (!ensurePeer(slave.mac)) return false;
     const uint32_t now = millis();
+    const bool retry = queued ? slave.queuedSendAttempts > 0 : slave.assignmentSendAttempts > 0;
+    if (retry) {
+      portENTER_CRITICAL(&mux_);
+      stats_.deliveryRetries++;
+      portEXIT_CRITICAL(&mux_);
+    }
     if (queued) {
       slave.queuedLastSentAtMs = now;
       if (slave.queuedSendAttempts < UINT8_MAX) slave.queuedSendAttempts++;
@@ -2126,12 +2161,16 @@ private:
   void updateRate(uint32_t& lastRateAt, uint64_t& lastLocalHashes) {
     const uint32_t now = millis();
     if (now - lastRateAt < 1000) return;
+    const uint32_t freeHeap = ESP.getFreeHeap();
+    const uint32_t stackHighWater = uxTaskGetStackHighWaterMark(nullptr);
     portENTER_CRITICAL(&mux_);
     const uint64_t local = stats_.localHashes;
     const uint32_t elapsed = now - lastRateAt;
     stats_.localHps = elapsed == 0 ? 0 : static_cast<uint32_t>((local - lastLocalHashes) * 1000ULL / elapsed);
     stats_.totalHps = stats_.localHps + stats_.slaveHps;
     stats_.uptimeSeconds = (now - startedAtMs_) / 1000;
+    stats_.freeHeap = freeHeap;
+    stats_.taskStackHighWater = stackHighWater;
     portEXIT_CRITICAL(&mux_);
     lastRateAt = now;
     lastLocalHashes = local;
@@ -2168,6 +2207,12 @@ public:
 
   void begin() {
     startedAtMs_ = millis();
+    lastServiceAtMs_ = startedAtMs_;
+    lastDiagnosticsAtMs_ = 0;
+    portENTER_CRITICAL(&mux_);
+    stats_ = SlaveStats();
+    portEXIT_CRITICAL(&mux_);
+    resetRuntimeState();
 #if MICRI_CLUSTER_SLAVE_TASK_ENABLED
     stopRequested_ = false;
 #endif
@@ -2311,6 +2356,39 @@ public:
   }
 
 private:
+  void resetRuntimeState() {
+#if MICRI_CLUSTER_DUAL_SLAVE_WORKER
+    portENTER_CRITICAL(&workMux_);
+    assignmentActive_ = false;
+    dualWorkersActive_ = 0;
+    dualNextNonce_ = 0;
+    dualFound_ = false;
+    dualFoundNonce_ = 0;
+    dualFoundDifficulty_ = 0.0f;
+    portEXIT_CRITICAL(&workMux_);
+#else
+    assignmentActive_ = false;
+#endif
+    pendingAssignmentActive_ = false;
+    pendingPacket_ = WorkAssignPacket();
+    pendingResultActive_ = false;
+    pendingResultPacket_ = WorkResultPacket();
+    pendingResultSendAttempts_ = 0;
+    pendingResultLastSentAtMs_ = 0;
+    currentWork_ = WorkContext();
+    currentJobSeq_ = 0;
+    currentAssignmentId_ = 0;
+    assignmentStartNonce_ = 0;
+    assignmentNonceCount_ = 0;
+    assignmentNextNonce_ = 0;
+    assignmentStartedAtMs_ = 0;
+    assignmentHashes_ = 0;
+    assignmentBest_ = 0.0f;
+    lastMasterSeenMs_ = 0;
+    lastHelloAtMs_ = 0;
+    lastStatusAtMs_ = 0;
+  }
+
 #if MICRI_CLUSTER_SLAVE_TASK_ENABLED
   static void taskEntry(void* ctx) {
     static_cast<SlaveEngine*>(ctx)->runTask();
@@ -2425,6 +2503,32 @@ private:
   void service() {
     processIncomingQueue();
     const uint32_t now = millis();
+    const uint32_t serviceElapsed = lastServiceAtMs_ == 0 ? 0 : now - lastServiceAtMs_;
+    lastServiceAtMs_ = now;
+    if (paired_ && !assignmentActive_ && !pendingAssignmentActive_ && serviceElapsed > 0) {
+      portENTER_CRITICAL(&mux_);
+      stats_.idleMs += serviceElapsed;
+      portEXIT_CRITICAL(&mux_);
+    }
+    if (lastDiagnosticsAtMs_ == 0 || now - lastDiagnosticsAtMs_ >= 2000) {
+      const uint32_t freeHeap = ESP.getFreeHeap();
+      uint32_t stackHighWater = 0;
+      uint32_t secondaryHighWater = 0;
+#if MICRI_CLUSTER_SLAVE_TASK_ENABLED
+      stackHighWater = uxTaskGetStackHighWaterMark(nullptr);
+#endif
+#if MICRI_CLUSTER_DUAL_SLAVE_WORKER && MICRI_CLUSTER_S3_SOFTWARE_WORKER
+      if (secondaryTask_ != nullptr) {
+        secondaryHighWater = uxTaskGetStackHighWaterMark(secondaryTask_);
+      }
+#endif
+      portENTER_CRITICAL(&mux_);
+      stats_.freeHeap = freeHeap;
+      stats_.taskStackHighWater = stackHighWater;
+      stats_.secondaryStackHighWater = secondaryHighWater;
+      portEXIT_CRITICAL(&mux_);
+      lastDiagnosticsAtMs_ = now;
+    }
     servicePendingResult(now);
     startPendingIfReady();
     const bool masterStale = paired_ && now - lastMasterSeenMs_ > 10000;
@@ -2469,6 +2573,9 @@ private:
     event.length = static_cast<uint16_t>(len);
     memcpy(event.data, data, event.length);
     if (xQueueSend(rxQueue_, &event, 0) != pdTRUE) {
+      portENTER_CRITICAL(&mux_);
+      stats_.rxQueueDrops++;
+      portEXIT_CRITICAL(&mux_);
       debugPrintf("[ClusterSlave] RX queue full\n");
     }
   }
@@ -2622,6 +2729,11 @@ private:
     if (!pendingResultActive_ || !paired_ || !radioStarted_ || !ensureMasterPeer()) return;
     if (pendingResultSendAttempts_ >= DELIVERY_RETRY_LIMIT) return;
     if (pendingResultSendAttempts_ > 0 && now - pendingResultLastSentAtMs_ < DELIVERY_RETRY_MS) return;
+    if (pendingResultSendAttempts_ > 0) {
+      portENTER_CRITICAL(&mux_);
+      stats_.resultRetries++;
+      portEXIT_CRITICAL(&mux_);
+    }
     pendingResultLastSentAtMs_ = now;
     pendingResultSendAttempts_++;
     esp_now_send(masterMac_, reinterpret_cast<const uint8_t*>(&pendingResultPacket_),
@@ -2939,9 +3051,18 @@ private:
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
     const bool hardwareWorker = !secondary;
     bool hardwareReady = false;
+    uint32_t hardwareMidstate[8] = {};
+    uint8_t hardwareReference[32] = {};
     if (hardwareWorker) {
+      // mbedTLS can use the same SHA peripheral, so calculate the one-time
+      // reference before taking the low-level hardware lock.
+      uint8_t referenceHeader[80];
+      memcpy(referenceHeader, work.paddedHeader, sizeof(referenceHeader));
+      memcpy(referenceHeader + 76, &startNonce, sizeof(startNonce));
+      doubleSha(referenceHeader, sizeof(referenceHeader), hardwareReference);
       esp_sha_acquire_hardware();
-      hardwareReady = validateHardwareS3Unlocked(work, startNonce);
+      prepareHardwareMidstateS3Unlocked(work, hardwareMidstate);
+      hardwareReady = validateHardwareS3Unlocked(work, hardwareMidstate, startNonce, hardwareReference);
     }
 #else
     (void)secondary;
@@ -2953,7 +3074,7 @@ private:
       processed++;
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
       const bool candidate = hardwareReady
-          ? hashNonceHardwareS3Unlocked(work, nonce, hash)
+          ? hashNonceHardwareS3Unlocked(work, hardwareMidstate, nonce, hash)
           : hashNonceSoftwarePrepared(work, nonce, hash);
 #else
       const bool candidate = hashNonceSoftwarePrepared(work, nonce, hash);
@@ -3107,6 +3228,8 @@ private:
   uint32_t lastMasterSeenMs_ = 0;
   uint32_t lastHelloAtMs_ = 0;
   uint32_t lastStatusAtMs_ = 0;
+  uint32_t lastServiceAtMs_ = 0;
+  uint32_t lastDiagnosticsAtMs_ = 0;
   volatile bool assignmentActive_ = false;
   bool pendingAssignmentActive_ = false;
   WorkAssignPacket pendingPacket_ = {};

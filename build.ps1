@@ -5,7 +5,7 @@ $Targets = @(
   @{ Sketch = "MicriOS-C3"; Fqbn = "esp32:esp32:esp32c3:PartitionScheme=huge_app" },
   @{ Sketch = "MicriOS-T-Display"; Fqbn = "esp32:esp32:esp32:PartitionScheme=huge_app" },
   @{ Sketch = "MicriOS-C3-Headless"; Fqbn = "esp32:esp32:esp32c3:PartitionScheme=huge_app" },
-  @{ Sketch = "MicriOS-S3-Zero-Headless"; Fqbn = "esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,FlashMode=qio,FlashSize=4M,PartitionScheme=huge_app,PSRAM=opi,UploadSpeed=921600" }
+  @{ Sketch = "MicriOS-S3-Zero-Headless"; Fqbn = "esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,FlashMode=qio,FlashSize=4M,PartitionScheme=huge_app,PSRAM=enabled,UploadSpeed=921600" }
 )
 
 function Invoke-ArduinoCli {

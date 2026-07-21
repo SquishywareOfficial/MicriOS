@@ -1,127 +1,105 @@
 #include <Arduino.h>
 #include <Preferences.h>
-#include <NimBLEDevice.h>
-#include <NimBLEHIDDevice.h>
-#include <NimBLEServer.h>
-#include <HIDTypes.h>
+#include <WiFi.h>
 
-// ESP32-S3-Zero is a dual-core no-display miner target. Let the shared
-// cluster slave chew larger chunks between status/UI yields than the C3.
+// ESP32-S3-Zero is a dedicated dual-core, no-display cluster miner. Core 1
+// drives the hardware SHA worker; core 0 can run the optional software helper.
 #define MICRI_CLUSTER_SLAVE_BATCH_NONCES 8192
 #define MICRI_CLUSTER_SLAVE_TASK_STACK 8192
 #define MICRI_CLUSTER_SLAVE_TASK_PRIORITY 3
-// Set to 0 during hardware benchmarking to compare the core-1 SHA accelerator
-// against the default accelerator + core-0 software helper configuration.
+
 #ifndef MICRI_CLUSTER_S3_SOFTWARE_WORKER
 #define MICRI_CLUSTER_S3_SOFTWARE_WORKER 1
 #endif
 
 #include "src/shared/Version.h"
 #include "src/shared/logic/MinerClusterLogic.h"
-#include "src/shared/logic/MouseEmulatorLogic.h"
-#include "src/shared/logic/MouseIdentityLogic.h"
 
+namespace {
 constexpr uint8_t LED_PIN = 21;
 constexpr uint8_t BUTTON_PIN = 0;
-constexpr bool LED_ACTIVE_LOW = false;
-constexpr bool LED_IS_NEOPIXEL = true;
-constexpr uint8_t LED_RED = 0;
-constexpr uint8_t LED_GREEN = 0;
-constexpr uint8_t LED_BLUE = 36;
-
 constexpr uint32_t LONG_HOLD_MS = 5000;
 constexpr uint32_t TAP_GAP_MS = 450;
 constexpr uint32_t DEBOUNCE_MS = 25;
+constexpr uint32_t MIN_LED_WRITE_MS = 35;
+constexpr uint32_t MINING_GRACE_MS = 3000;
+constexpr const char* DEVICE_PREF_NS = "s3zero";
+constexpr const char* LED_ENABLED_PREF_KEY = "led";
 
-constexpr uint16_t MENU_ON_MS = 2000;
-constexpr uint16_t MENU_SELECT_MS = 2000;
-constexpr uint16_t SHORT_BLINK_MS = 120;
-constexpr uint16_t APP_MARKER_ON_MS = 700;
-constexpr uint16_t APP_MARKER_STATE_GAP_MS = 180;
-constexpr uint16_t STATE_WINDOW_MS = 5000;
-
-constexpr int MOUSE_VERTICAL_WIGGLE_LIMIT = 20;
-constexpr int MOUSE_VERTICAL_WIGGLE_MIN_STEPS = 8;
-constexpr int MOUSE_VERTICAL_WIGGLE_MAX_STEPS = 28;
-constexpr int MOUSE_STEPS_PER_TICK = 24;
-
-constexpr const char* HEADLESS_PREF_NS = "headless";
-constexpr const char* AUTO_APP_KEY = "auto_app";
-constexpr const char* MOUSE_ADDR_KEY = "mouse_addr";
-
-enum class HeadlessApp : uint8_t {
-  Mouse = 1,
-  Miner = 2,
+struct Rgb {
+  uint8_t r = 0;
+  uint8_t g = 0;
+  uint8_t b = 0;
 };
 
-enum class Mode : uint8_t {
-  Menu,
-  Mouse,
-  Miner,
-};
+constexpr Rgb LED_OFF = {0, 0, 0};
+constexpr Rgb LED_WHITE = {30, 30, 30};
+constexpr Rgb LED_RED = {36, 0, 0};
+constexpr Rgb LED_AMBER = {34, 12, 0};
+constexpr Rgb LED_BLUE = {0, 0, 36};
+constexpr Rgb LED_GREEN = {0, 32, 0};
+constexpr Rgb LED_PURPLE = {24, 0, 30};
+constexpr Rgb LED_CYAN = {0, 28, 28};
+
+bool sameColor(const Rgb& a, const Rgb& b) {
+  return a.r == b.r && a.g == b.g && a.b == b.b;
+}
+
+Rgb scaledColor(const Rgb& color, uint8_t scale) {
+  return {
+      static_cast<uint8_t>((static_cast<uint16_t>(color.r) * scale) / 255),
+      static_cast<uint8_t>((static_cast<uint16_t>(color.g) * scale) / 255),
+      static_cast<uint8_t>((static_cast<uint16_t>(color.b) * scale) / 255),
+  };
+}
 
 enum class ButtonEvent : uint8_t {
   None,
-  Hold5s,
   OneTap,
   TwoTaps,
   ThreeTaps,
+  Hold5s,
 };
 
 struct LedStep {
-  bool on;
+  Rgb color;
   uint16_t durationMs;
-  bool selectWindow;
 };
 
 class LedProgram {
- public:
-  void clear(uint32_t nowMs) {
-    count_ = 0;
-    index_ = 0;
-    startedAtMs_ = nowMs;
-    done_ = true;
-  }
-
+public:
   void start(const LedStep* steps, uint8_t count, uint32_t nowMs) {
     count_ = min<uint8_t>(count, MAX_STEPS);
     for (uint8_t i = 0; i < count_; ++i) steps_[i] = steps[i];
     index_ = 0;
-    startedAtMs_ = nowMs;
-    done_ = count_ == 0;
-    if (!done_) setLed(steps_[0].on);
+    stepStartedAtMs_ = nowMs;
+    active_ = count_ > 0;
   }
 
-  void update(uint32_t nowMs) {
-    if (done_ || count_ == 0) return;
-    if (nowMs - startedAtMs_ < steps_[index_].durationMs) return;
-    index_++;
-    if (index_ >= count_) {
-      done_ = true;
-      return;
+  void cancel() { active_ = false; }
+  bool active() const { return active_; }
+
+  Rgb update(uint32_t nowMs) {
+    if (!active_ || count_ == 0) return LED_OFF;
+    while (active_ && nowMs - stepStartedAtMs_ >= steps_[index_].durationMs) {
+      stepStartedAtMs_ += steps_[index_].durationMs;
+      index_++;
+      if (index_ >= count_) active_ = false;
     }
-    startedAtMs_ = nowMs;
-    setLed(steps_[index_].on);
+    return active_ ? steps_[index_].color : LED_OFF;
   }
 
-  bool done() const { return done_; }
-  bool inSelectWindow() const {
-    return !done_ && count_ > 0 && index_ < count_ && steps_[index_].selectWindow;
-  }
-
- private:
-  static constexpr uint8_t MAX_STEPS = 72;
+private:
+  static constexpr uint8_t MAX_STEPS = 8;
   LedStep steps_[MAX_STEPS] = {};
   uint8_t count_ = 0;
   uint8_t index_ = 0;
-  uint32_t startedAtMs_ = 0;
-  bool done_ = true;
-
-  void setLed(bool on);
+  uint32_t stepStartedAtMs_ = 0;
+  bool active_ = false;
 };
 
 class ButtonTracker {
- public:
+public:
   void begin(bool down, uint32_t nowMs) {
     rawDown_ = down;
     stableDown_ = down;
@@ -162,13 +140,11 @@ class ButtonTracker {
       if (taps == 1) return ButtonEvent::OneTap;
       if (taps == 2) return ButtonEvent::TwoTaps;
       if (taps == 3) return ButtonEvent::ThreeTaps;
-      return ButtonEvent::None;
     }
-
     return ButtonEvent::None;
   }
 
- private:
+private:
   bool rawDown_ = false;
   bool stableDown_ = false;
   bool holdEmitted_ = false;
@@ -178,561 +154,246 @@ class ButtonTracker {
   uint32_t lastTapMs_ = 0;
 };
 
-namespace {
-constexpr uint8_t HID_COUNTRY_NOT_LOCALIZED = 0x00;
-constexpr uint8_t HID_INFO_NORMALLY_CONNECTABLE = 0x02;
-
-const uint8_t HID_REPORT_DESCRIPTOR[] = {
-    USAGE_PAGE(1), 0x01, USAGE(1), 0x02, COLLECTION(1), 0x01, USAGE(1), 0x01, COLLECTION(1), 0x00,
-    REPORT_ID(1), 0x01, USAGE_PAGE(1), 0x09, USAGE_MINIMUM(1), 0x01, USAGE_MAXIMUM(1), 0x05,
-    LOGICAL_MINIMUM(1), 0x00, LOGICAL_MAXIMUM(1), 0x01, REPORT_SIZE(1), 0x01, REPORT_COUNT(1), 0x05,
-    HIDINPUT(1), 0x02, REPORT_SIZE(1), 0x03, REPORT_COUNT(1), 0x01, HIDINPUT(1), 0x03,
-    USAGE_PAGE(1), 0x01, USAGE(1), 0x30, USAGE(1), 0x31, USAGE(1), 0x38,
-    LOGICAL_MINIMUM(1), 0x81, LOGICAL_MAXIMUM(1), 0x7f, REPORT_SIZE(1), 0x08, REPORT_COUNT(1), 0x03,
-    HIDINPUT(1), 0x06, USAGE_PAGE(1), 0x0c, USAGE(2), 0x38, 0x02,
-    LOGICAL_MINIMUM(1), 0x81, LOGICAL_MAXIMUM(1), 0x7f, REPORT_SIZE(1), 0x08, REPORT_COUNT(1), 0x01,
-    HIDINPUT(1), 0x06, END_COLLECTION(0), END_COLLECTION(0)
-};
-}  // namespace
-
-class HeadlessBleMouse : public NimBLEServerCallbacks {
- public:
-  void begin() {
-    if (started_) return;
-    const MouseIdentityProfile& identity = MouseIdentityLogic::profile(0);
-    NimBLEDevice::init(identity.deviceName);
-    applySavedAddress();
-    NimBLEDevice::setSecurityAuth(true, false, true);
-    NimBLEDevice::setSecurityIOCap(0x03);
-    server_ = NimBLEDevice::createServer();
-    server_->setCallbacks(this, false);
-    server_->advertiseOnDisconnect(true);
-    hid_ = new NimBLEHIDDevice(server_);
-    inputMouse_ = hid_->getInputReport(1);
-    hid_->setManufacturer(identity.manufacturer);
-    hid_->setPnp(0x02, identity.vendorId, identity.productId, 0x0110);
-    hid_->setHidInfo(HID_COUNTRY_NOT_LOCALIZED, HID_INFO_NORMALLY_CONNECTABLE);
-    hid_->setReportMap((uint8_t*)HID_REPORT_DESCRIPTOR, sizeof(HID_REPORT_DESCRIPTOR));
-    hid_->setBatteryLevel(100);
-    server_->start();
-    NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
-    adv->setAppearance(HID_MOUSE);
-    adv->addServiceUUID(hid_->getHidService()->getUUID());
-    adv->setName(identity.deviceName);
-    adv->addTxPower();
-    adv->start();
-    started_ = true;
-    connected_ = false;
-  }
-
-  void end() {
-    if (!started_) return;
-    NimBLEDevice::stopAdvertising();
-    NimBLEDevice::deinit(true);
-    started_ = false;
-    connected_ = false;
-    server_ = nullptr;
-    hid_ = nullptr;
-    inputMouse_ = nullptr;
-  }
-
-  bool clearPairing() {
-    if (!started_) begin();
-    clearingPairing_ = true;
-    NimBLEDevice::stopAdvertising();
-    if (server_) {
-      const auto peers = server_->getPeerDevices();
-      for (uint16_t handle : peers) {
-        server_->disconnect(handle);
-      }
-      const uint32_t disconnectStartedAt = millis();
-      while (server_->getConnectedCount() > 0 && millis() - disconnectStartedAt < 1000) {
-        delay(20);
-      }
-    }
-    const int bondsBefore = NimBLEDevice::getNumBonds();
-    const bool cleared = NimBLEDevice::deleteAllBonds();
-    const bool addressRotated = rotateSavedAddress();
-    NimBLEDevice::deinit(true);
-    started_ = false;
-    connected_ = false;
-    server_ = nullptr;
-    hid_ = nullptr;
-    inputMouse_ = nullptr;
-    delay(250);
-    clearingPairing_ = false;
-    begin();
-    Serial.print("[headless] mouse bonds cleared=");
-    Serial.print(cleared ? "yes" : "no");
-    Serial.print(" count=");
-    Serial.print(bondsBefore);
-    Serial.print(" address_rotated=");
-    Serial.println(addressRotated ? "yes" : "no");
-    return (cleared || bondsBefore == 0) && addressRotated;
-  }
-
-  bool isStarted() const { return started_; }
-  bool isConnected() const { return started_ && connected_ && server_ && server_->getConnectedCount() > 0; }
-
-  void move(signed char x, signed char y) {
-    if (!isConnected()) return;
-    uint8_t report[] = {0, static_cast<uint8_t>(x), static_cast<uint8_t>(y), 0, 0};
-    inputMouse_->notify(report, sizeof(report));
-  }
-
- private:
-  void onConnect(NimBLEServer*, NimBLEConnInfo&) override { connected_ = true; }
-
-  void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int) override {
-    connected_ = false;
-    if (!clearingPairing_) NimBLEDevice::startAdvertising();
-  }
-
-  static void makeRandomStaticAddress(uint8_t address[6]) {
-    for (uint8_t i = 0; i < 6; ++i) {
-      address[i] = static_cast<uint8_t>(esp_random() & 0xff);
-    }
-    // BLE random static addresses must have the two most significant bits set.
-    address[5] = static_cast<uint8_t>((address[5] & 0x3f) | 0xc0);
-  }
-
-  bool loadSavedAddress(uint8_t address[6]) const {
-    Preferences prefs;
-    prefs.begin(HEADLESS_PREF_NS, true);
-    const size_t length = prefs.getBytesLength(MOUSE_ADDR_KEY);
-    const bool ok = length == 6 && prefs.getBytes(MOUSE_ADDR_KEY, address, 6) == 6;
-    prefs.end();
-    return ok;
-  }
-
-  bool rotateSavedAddress() const {
-    uint8_t address[6];
-    makeRandomStaticAddress(address);
-    Preferences prefs;
-    prefs.begin(HEADLESS_PREF_NS, false);
-    const size_t written = prefs.putBytes(MOUSE_ADDR_KEY, address, 6);
-    prefs.end();
-    return written == 6;
-  }
-
-  void applySavedAddress() const {
-    uint8_t address[6];
-    if (!loadSavedAddress(address)) return;
-    const bool addressSet = NimBLEDevice::setOwnAddr(address);
-    const bool typeSet = NimBLEDevice::setOwnAddrType(0x01);
-    Serial.print("[headless] mouse random address=");
-    Serial.println(addressSet && typeSet ? "enabled" : "failed");
-  }
-
-  bool started_ = false;
-  bool connected_ = false;
-  bool clearingPairing_ = false;
-  NimBLEServer* server_ = nullptr;
-  NimBLEHIDDevice* hid_ = nullptr;
-  NimBLECharacteristic* inputMouse_ = nullptr;
-};
-
 MinerCluster::SlaveEngine slave;
-MouseEmulatorLogic mouseLogic;
-HeadlessBleMouse bleMouse;
-LedProgram ledProgram;
 ButtonTracker buttonTracker;
-
-Mode mode = Mode::Menu;
-HeadlessApp menuSlot = HeadlessApp::Mouse;
+LedProgram ledProgram;
+Rgb lastLedColor = LED_OFF;
+uint32_t lastLedWriteAtMs = 0;
 uint32_t lastStatsAtMs = 0;
 uint32_t lastMiningSeenAtMs = 0;
-bool ledOn = false;
+bool ledEnabled = true;
+
+Rgb stateColor(const MinerCluster::SlaveStats& stats, uint32_t nowMs);
 
 bool buttonDown() {
   return digitalRead(BUTTON_PIN) == LOW;
 }
 
-void setLedRaw(bool on) {
-  ledOn = on;
-  if (LED_IS_NEOPIXEL) {
-    neopixelWrite(LED_PIN, on ? LED_RED : 0, on ? LED_GREEN : 0, on ? LED_BLUE : 0);
+void writeLed(const Rgb& color, uint32_t nowMs, bool force = false) {
+  const Rgb& output = ledEnabled ? color : LED_OFF;
+  if (!force && sameColor(output, lastLedColor)) return;
+  if (!force && nowMs - lastLedWriteAtMs < MIN_LED_WRITE_MS) return;
+  neopixelWrite(LED_PIN, output.r, output.g, output.b);
+  lastLedColor = output;
+  lastLedWriteAtMs = nowMs;
+}
+
+void loadLedPreference() {
+  Preferences prefs;
+  prefs.begin(DEVICE_PREF_NS, true);
+  ledEnabled = prefs.getBool(LED_ENABLED_PREF_KEY, true);
+  prefs.end();
+}
+
+void saveLedPreference() {
+  Preferences prefs;
+  prefs.begin(DEVICE_PREF_NS, false);
+  prefs.putBool(LED_ENABLED_PREF_KEY, ledEnabled);
+  prefs.end();
+}
+
+void toggleLed(uint32_t nowMs) {
+  ledEnabled = !ledEnabled;
+  saveLedPreference();
+  ledProgram.cancel();
+  Serial.print("[s3zero] BOOT tap: status LED ");
+  Serial.println(ledEnabled ? "enabled" : "disabled");
+  if (ledEnabled) {
+    writeLed(stateColor(slave.stats(), nowMs), nowMs, true);
   } else {
-    digitalWrite(LED_PIN, LED_ACTIVE_LOW ? (on ? LOW : HIGH) : (on ? HIGH : LOW));
+    writeLed(LED_OFF, nowMs, true);
   }
 }
 
-void LedProgram::setLed(bool on) {
-  setLedRaw(on);
+Rgb pulseColor(const Rgb& color, uint32_t nowMs, uint32_t periodMs) {
+  const uint32_t half = max<uint32_t>(1, periodMs / 2);
+  const uint32_t phase = nowMs % periodMs;
+  const uint32_t ramp = phase < half ? phase : periodMs - phase;
+  const uint8_t scale = static_cast<uint8_t>(48 + (ramp * 207UL) / half);
+  return scaledColor(color, scale);
 }
 
-bool loadAutolaunchApp(HeadlessApp& app) {
-  Preferences prefs;
-  prefs.begin(HEADLESS_PREF_NS, true);
-  const uint8_t savedApp = prefs.getUChar(AUTO_APP_KEY, 0);
-  prefs.end();
-  if (savedApp == static_cast<uint8_t>(HeadlessApp::Mouse)) {
-    app = HeadlessApp::Mouse;
-    return true;
+void startBootLed(uint32_t nowMs) {
+  const LedStep steps[] = {{LED_WHITE, 700}, {LED_OFF, 120}};
+  ledProgram.start(steps, sizeof(steps) / sizeof(steps[0]), nowMs);
+}
+
+void startRestartAcknowledgement(uint32_t nowMs) {
+  const LedStep steps[] = {{LED_PURPLE, 600}, {LED_OFF, 140}};
+  ledProgram.start(steps, sizeof(steps) / sizeof(steps[0]), nowMs);
+}
+
+void startPairingClearedAcknowledgement(uint32_t nowMs) {
+  const LedStep steps[] = {
+      {LED_CYAN, 130}, {LED_OFF, 130},
+      {LED_CYAN, 130}, {LED_OFF, 130},
+      {LED_CYAN, 130}, {LED_OFF, 180},
+  };
+  ledProgram.start(steps, sizeof(steps) / sizeof(steps[0]), nowMs);
+}
+
+Rgb stateColor(const MinerCluster::SlaveStats& stats, uint32_t nowMs) {
+  if (stats.state == MinerCluster::SlaveState::Error || MinerCluster::s3HardwareDisabled()) {
+    return ((nowMs / 120) & 1U) == 0 ? LED_RED : LED_OFF;
   }
-  if (savedApp == static_cast<uint8_t>(HeadlessApp::Miner)) {
-    app = HeadlessApp::Miner;
-    return true;
+  if (stats.state == MinerCluster::SlaveState::Mining) lastMiningSeenAtMs = nowMs;
+  if (lastMiningSeenAtMs != 0 && nowMs - lastMiningSeenAtMs < MINING_GRACE_MS) return LED_GREEN;
+  if (!stats.paired) return pulseColor(LED_RED, nowMs, 1600);
+  if (stats.state == MinerCluster::SlaveState::Searching || stats.state == MinerCluster::SlaveState::Pairing) {
+    return pulseColor(LED_AMBER, nowMs, 1800);
   }
-  return false;
+  return LED_BLUE;
 }
 
-void saveAutolaunchApp(HeadlessApp app) {
-  Preferences prefs;
-  prefs.begin(HEADLESS_PREF_NS, false);
-  prefs.putUChar(AUTO_APP_KEY, static_cast<uint8_t>(app));
-  prefs.end();
-  Serial.print("[headless] autolaunch=");
-  Serial.println(app == HeadlessApp::Mouse ? "Mouse Emulator" : "Slave Miner");
-}
-
-void clearAutolaunchApp() {
-  Preferences prefs;
-  prefs.begin(HEADLESS_PREF_NS, false);
-  const bool removed = prefs.remove(AUTO_APP_KEY);
-  prefs.end();
-  Serial.print("[headless] autolaunch cleared=");
-  Serial.println(removed ? "yes" : "already-clear");
-}
-
-void addStep(LedStep* steps, uint8_t& count, bool on, uint16_t durationMs, bool selectWindow = false) {
-  steps[count++] = {on, durationMs, selectWindow};
-}
-
-void addBlinks(LedStep* steps, uint8_t& count, uint8_t blinks) {
-  for (uint8_t i = 0; i < blinks; ++i) {
-    addStep(steps, count, false, SHORT_BLINK_MS);
-    addStep(steps, count, true, SHORT_BLINK_MS);
-  }
-}
-
-void addBlinkingWindow(LedStep* steps, uint8_t& count, uint16_t intervalMs) {
-  uint32_t elapsed = 0;
-  bool on = true;
-  while (elapsed < STATE_WINDOW_MS && count < 70) {
-    const uint16_t duration = static_cast<uint16_t>(min<uint32_t>(intervalMs, STATE_WINDOW_MS - elapsed));
-    addStep(steps, count, on, duration);
-    elapsed += duration;
-    on = !on;
-  }
-}
-
-void startMenuPattern(uint32_t nowMs) {
-  LedStep steps[8] = {};
-  uint8_t count = 0;
-  addStep(steps, count, true, MENU_ON_MS);
-  addBlinks(steps, count, menuSlot == HeadlessApp::Mouse ? 1 : 2);
-  addStep(steps, count, false, MENU_SELECT_MS, true);
-  ledProgram.start(steps, count, nowMs);
-}
-
-void flashAutolaunchCleared() {
-  for (uint8_t i = 0; i < 3; ++i) {
-    setLedRaw(false);
-    delay(SHORT_BLINK_MS);
-    setLedRaw(true);
-    delay(SHORT_BLINK_MS);
-  }
-  setLedRaw(false);
-  delay(220);
-}
-
-void appendAppMarker(LedStep* steps, uint8_t& count, HeadlessApp app) {
-  addStep(steps, count, true, APP_MARKER_ON_MS);
-  addBlinks(steps, count, app == HeadlessApp::Mouse ? 1 : 2);
-  addStep(steps, count, true, 240);
-  addStep(steps, count, false, APP_MARKER_STATE_GAP_MS);
-}
-
-void startMouseLedPattern(uint32_t nowMs) {
-  LedStep steps[16] = {};
-  uint8_t count = 0;
-  appendAppMarker(steps, count, HeadlessApp::Mouse);
-
-  const bool connected = bleMouse.isConnected();
-  const bool started = bleMouse.isStarted();
-  if (connected && mouseLogic.isEnabled()) {
-    addStep(steps, count, true, STATE_WINDOW_MS);
-  } else if (connected && !mouseLogic.isEnabled()) {
-    addStep(steps, count, true, STATE_WINDOW_MS);
-    addBlinks(steps, count, 1);
-  } else if (!started) {
-    addStep(steps, count, true, STATE_WINDOW_MS);
-    addBlinks(steps, count, 2);
-  } else {
-    addStep(steps, count, true, STATE_WINDOW_MS);
-    addBlinks(steps, count, 3);
-  }
-  addStep(steps, count, false, 220);
-  ledProgram.start(steps, count, nowMs);
-}
-
-void startMinerLedPattern(uint32_t nowMs) {
-  LedStep steps[72] = {};
-  uint8_t count = 0;
-  appendAppMarker(steps, count, HeadlessApp::Miner);
-
+void updateLed(uint32_t nowMs) {
   const MinerCluster::SlaveStats stats = slave.stats();
-  if (stats.state == MinerCluster::SlaveState::Mining) {
-    lastMiningSeenAtMs = nowMs;
+  if (stats.state == MinerCluster::SlaveState::Error || MinerCluster::s3HardwareDisabled()) {
+    ledProgram.cancel();
+    writeLed(stateColor(stats, nowMs), nowMs);
+    return;
   }
-
-  if (nowMs - lastMiningSeenAtMs < 3000) {
-    addStep(steps, count, true, STATE_WINDOW_MS);
-  } else if (stats.state == MinerCluster::SlaveState::Error) {
-    addBlinkingWindow(steps, count, 120);
-  } else if (!stats.paired || stats.state == MinerCluster::SlaveState::Searching) {
-    addBlinkingWindow(steps, count, 700);
-  } else {
-    addBlinkingWindow(steps, count, 2000);
+  if (ledProgram.active()) {
+    writeLed(ledProgram.update(nowMs), nowMs);
+    return;
   }
-
-  addStep(steps, count, false, 220);
-  ledProgram.start(steps, count, nowMs);
+  writeLed(stateColor(stats, nowMs), nowMs);
 }
 
-void stopCurrentApp() {
-  if (mode == Mode::Mouse) {
-    bleMouse.end();
-  } else if (mode == Mode::Miner) {
-    slave.stop();
-  }
+void printMac() {
+  uint8_t mac[6] = {};
+  WiFi.macAddress(mac);
+  char text[18];
+  snprintf(text, sizeof(text), "%02X:%02X:%02X:%02X:%02X:%02X",
+           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  Serial.print("[s3zero] mac=");
+  Serial.println(text);
 }
 
-void enterMenu(uint32_t nowMs) {
-  stopCurrentApp();
-  mode = Mode::Menu;
-  menuSlot = HeadlessApp::Mouse;
-  ledProgram.clear(nowMs);
-  setLedRaw(false);
-  Serial.println("[headless] menu");
-}
-
-void enterMouse(uint32_t nowMs) {
-  stopCurrentApp();
-  mode = Mode::Mouse;
-  mouseLogic.reset(nowMs);
-  bleMouse.begin();
-  ledProgram.clear(nowMs);
-  Serial.println("[headless] app=Mouse Emulator device=Logitech Signature M650");
-}
-
-void enterMiner(uint32_t nowMs) {
-  stopCurrentApp();
-  mode = Mode::Miner;
-  lastMiningSeenAtMs = 0;
+void restartSlave(uint32_t nowMs) {
+  Serial.println("[s3zero] BOOT hold: restarting slave engine");
+  slave.stop();
   slave.begin();
-  ledProgram.clear(nowMs);
-  Serial.println("[headless] app=Slave Miner");
+  lastMiningSeenAtMs = 0;
+  startRestartAcknowledgement(nowMs);
 }
 
-void enterApp(HeadlessApp app, uint32_t nowMs) {
-  if (app == HeadlessApp::Mouse) enterMouse(nowMs);
-  else enterMiner(nowMs);
-}
-
-HeadlessApp currentApp() {
-  return mode == Mode::Mouse ? HeadlessApp::Mouse : HeadlessApp::Miner;
-}
-
-void sendHumanizedMouseStep() {
-  int y = 0;
-  mouseLogic.verticalJitterCountdown()--;
-  if (mouseLogic.verticalJitterCountdown() <= 0) {
-    if (mouseLogic.verticalOffset() >= MOUSE_VERTICAL_WIGGLE_LIMIT) y = -1;
-    else if (mouseLogic.verticalOffset() <= -MOUSE_VERTICAL_WIGGLE_LIMIT) y = 1;
-    else y = random(0, 2) == 0 ? -1 : 1;
-    mouseLogic.verticalOffset() += y;
-    mouseLogic.verticalJitterCountdown() = random(MOUSE_VERTICAL_WIGGLE_MIN_STEPS, MOUSE_VERTICAL_WIGGLE_MAX_STEPS);
-  }
-  bleMouse.move(static_cast<signed char>(mouseLogic.movementDirection()), static_cast<signed char>(y));
-  delayMicroseconds(200);
-}
-
-void updateMouse(uint32_t nowMs) {
-  const bool connected = bleMouse.isConnected();
-
-  if (mouseLogic.shouldStartMove(nowMs, connected)) {
-    mouseLogic.startMove(nowMs, 500, 5000);
-  } else if (mouseLogic.getPhase() == MouseEmulatorLogic::Forward) {
-    if (!connected) {
-      mouseLogic.setPhase(MouseEmulatorLogic::Idle);
-      mouseLogic.setMoving(false);
-      mouseLogic.setLastJiggleTime(nowMs);
-    } else {
-      const int steps = min(MOUSE_STEPS_PER_TICK, mouseLogic.remainingSteps());
-      for (int i = 0; i < steps; ++i) sendHumanizedMouseStep();
-      mouseLogic.remainingSteps() -= steps;
-      if (mouseLogic.remainingSteps() <= 0) {
-        mouseLogic.setWaitUntil(nowMs + random(400, 1200));
-        mouseLogic.setPhase(MouseEmulatorLogic::Waiting);
-      }
-    }
-  } else if (mouseLogic.getPhase() == MouseEmulatorLogic::Waiting) {
-    if (nowMs >= mouseLogic.getWaitUntil()) {
-      mouseLogic.setPhase(MouseEmulatorLogic::Back);
-      mouseLogic.remainingSteps() = mouseLogic.getLastMovementPixels();
-      mouseLogic.movementDirection() = -1;
-    }
-  } else if (mouseLogic.getPhase() == MouseEmulatorLogic::Back) {
-    if (!connected) {
-      mouseLogic.setPhase(MouseEmulatorLogic::Idle);
-      mouseLogic.setMoving(false);
-      mouseLogic.setLastJiggleTime(nowMs);
-    } else {
-      const int steps = min(MOUSE_STEPS_PER_TICK, mouseLogic.remainingSteps());
-      for (int i = 0; i < steps; ++i) sendHumanizedMouseStep();
-      mouseLogic.remainingSteps() -= steps;
-      if (mouseLogic.remainingSteps() <= 0) {
-        mouseLogic.setPhase(MouseEmulatorLogic::Idle);
-        mouseLogic.setMoving(false);
-        mouseLogic.setLastJiggleTime(nowMs);
-        mouseLogic.calculateNextInterval();
-      }
-    }
-  }
-}
-
-void handleAppButton(ButtonEvent event, uint32_t nowMs) {
-  if (event == ButtonEvent::Hold5s) {
-    enterMenu(nowMs);
-  } else if (event == ButtonEvent::TwoTaps) {
-    saveAutolaunchApp(currentApp());
-  } else if (event == ButtonEvent::ThreeTaps && mode == Mode::Mouse) {
-    bleMouse.clearPairing();
-    mouseLogic.reset(nowMs);
-    ledProgram.clear(nowMs);
-  } else if (event == ButtonEvent::ThreeTaps && mode == Mode::Miner) {
+void handleButton(ButtonEvent event, uint32_t nowMs) {
+  if (event == ButtonEvent::OneTap) {
+    toggleLed(nowMs);
+  } else if (event == ButtonEvent::ThreeTaps) {
+    Serial.println("[s3zero] BOOT triple-tap: clearing master pairing");
     slave.clearPairing();
-    Serial.println("[headless] miner pairing cleared");
+    lastMiningSeenAtMs = 0;
+    startPairingClearedAcknowledgement(nowMs);
+  } else if (event == ButtonEvent::Hold5s) {
+    restartSlave(nowMs);
   }
 }
 
-void updateMenu(ButtonEvent event, uint32_t nowMs) {
-  if (event == ButtonEvent::TwoTaps) {
-    clearAutolaunchApp();
-    ledProgram.clear(nowMs);
-    flashAutolaunchCleared();
-    startMenuPattern(millis());
-    return;
-  }
-
-  if (event == ButtonEvent::OneTap && ledProgram.inSelectWindow()) {
-    enterApp(menuSlot, nowMs);
-    return;
-  }
-
-  ledProgram.update(nowMs);
-  if (ledProgram.done()) {
-    menuSlot = menuSlot == HeadlessApp::Mouse ? HeadlessApp::Miner : HeadlessApp::Mouse;
-    startMenuPattern(nowMs);
-  }
-}
-
-void updateLedForMode(uint32_t nowMs) {
-  ledProgram.update(nowMs);
-  if (!ledProgram.done()) return;
-  if (mode == Mode::Mouse) startMouseLedPattern(nowMs);
-  else if (mode == Mode::Miner) startMinerLedPattern(nowMs);
+const char* shaMode() {
+  if (MinerCluster::s3HardwareDisabled()) return "software-fallback";
+  if (MinerCluster::s3HardwareDigestMode() >= 0) return "hardware";
+  return "pending-validation";
 }
 
 void printStats(uint32_t nowMs) {
   if (nowMs - lastStatsAtMs < 2000) return;
   lastStatsAtMs = nowMs;
+  const MinerCluster::SlaveStats stats = slave.stats();
 
-  Serial.print("[headless] build=");
+  Serial.print("[s3zero] build=");
   Serial.print(BuildInfo::BUILD_TEXT);
-  Serial.print(" mode=");
-
-  if (mode == Mode::Mouse) {
-    Serial.print("mouse connected=");
-    Serial.print(bleMouse.isConnected() ? "yes" : "no");
-    Serial.print(" enabled=");
-    Serial.print(mouseLogic.isEnabled() ? "yes" : "no");
-    Serial.print(" moving=");
-    Serial.println(mouseLogic.isMoving() ? "yes" : "no");
-  } else if (mode == Mode::Miner) {
-    const MinerCluster::SlaveStats stats = slave.stats();
-    Serial.print("miner state=");
-    Serial.print(MinerCluster::slaveStateLabel(stats.state));
-    Serial.print(" paired=");
-    Serial.print(stats.paired ? "yes" : "no");
-    Serial.print(" channel=");
-    Serial.print(stats.channel);
-    Serial.print(" khps=");
-    Serial.print(stats.hashrate / 1000.0f, 1);
-    Serial.print(" effective_khps=");
-    Serial.print(stats.effectiveHashrate / 1000.0f, 1);
-    Serial.print(" sha=");
-    if (MinerCluster::s3HardwareDisabled()) Serial.print("software-fallback");
-    else if (MinerCluster::s3HardwareDigestMode() >= 0) Serial.print("hardware");
-    else Serial.print("pending-validation");
-    Serial.print(" caps=0x");
-    Serial.print(stats.capabilities, HEX);
-    Serial.print(" jobs=");
-    Serial.print(stats.jobs);
-    Serial.print(" completed=");
-    Serial.print(stats.completed);
-    Serial.print(" total_kh=");
-    Serial.print(static_cast<unsigned long>(stats.totalHashes / 1000ULL));
-    if (stats.lastError[0]) {
-      Serial.print(" error=");
-      Serial.print(stats.lastError);
-    }
-    Serial.println();
-  } else {
-    Serial.print("menu slot=");
-    Serial.println(menuSlot == HeadlessApp::Mouse ? "mouse" : "miner");
+  Serial.print(" state=");
+  Serial.print(MinerCluster::slaveStateLabel(stats.state));
+  Serial.print(" paired=");
+  Serial.print(stats.paired ? "yes" : "no");
+  Serial.print(" ch=");
+  Serial.print(stats.channel);
+  Serial.print(" raw_khps=");
+  Serial.print(stats.hashrate / 1000.0f, 1);
+  Serial.print(" effective_khps=");
+  Serial.print(stats.effectiveHashrate / 1000.0f, 1);
+  Serial.print(" sha=");
+  Serial.print(shaMode());
+  Serial.print(" caps=0x");
+  Serial.print(stats.capabilities, HEX);
+  Serial.print(" jobs=");
+  Serial.print(stats.jobs);
+  Serial.print(" done=");
+  Serial.print(stats.completed);
+  Serial.print(" assign=");
+  Serial.print(stats.currentAssignmentId);
+  Serial.print(" progress=");
+  Serial.print(stats.assignmentDone);
+  Serial.print('/');
+  Serial.print(stats.assignmentSize);
+  Serial.print(" rx_drop=");
+  Serial.print(stats.rxQueueDrops);
+  Serial.print(" result_retry=");
+  Serial.print(stats.resultRetries);
+  Serial.print(" idle_ms=");
+  Serial.print(stats.idleMs);
+  Serial.print(" heap=");
+  Serial.print(stats.freeHeap);
+  Serial.print(" stack=");
+  Serial.print(stats.taskStackHighWater);
+  Serial.print(" stack2=");
+  Serial.print(stats.secondaryStackHighWater);
+  Serial.print(" total_kh=");
+  Serial.print(static_cast<unsigned long>(stats.totalHashes / 1000ULL));
+  Serial.print(" temp_c=");
+  Serial.print(temperatureRead(), 1);
+  Serial.print(" led=");
+  Serial.print(ledEnabled ? "on" : "off");
+  if (stats.lastError[0]) {
+    Serial.print(" error=");
+    Serial.print(stats.lastError);
   }
+  Serial.println();
 }
+}  // namespace
 
 void setup() {
   setCpuFrequencyMhz(240);
-  pinMode(LED_PIN, OUTPUT);
   pinMode(BUTTON_PIN, INPUT_PULLUP);
-  setLedRaw(false);
   Serial.begin(115200);
   delay(300);
-  randomSeed(static_cast<uint32_t>(esp_random()));
   buttonTracker.begin(buttonDown(), millis());
+  loadLedPreference();
+  writeLed(LED_OFF, millis(), true);
+  if (ledEnabled) startBootLed(millis());
 
   Serial.println();
-  Serial.print("[headless] Micri S3-Zero Headless ");
+  Serial.print("[s3zero] MicriOS dedicated Distributed Miner slave ");
   Serial.println(BuildInfo::BUILD_TEXT);
-  Serial.println("[headless] apps=Mouse Emulator, Slave Miner");
-  Serial.println("[headless] default app=Slave Miner");
+  Serial.print("[s3zero] chip=");
+  Serial.print(ESP.getChipModel());
+  Serial.print(" cores=");
+  Serial.print(ESP.getChipCores());
+  Serial.print(" cpu_mhz=");
+  Serial.print(getCpuFrequencyMhz());
+  Serial.print(" flash_bytes=");
+  Serial.print(ESP.getFlashChipSize());
+  Serial.print(" psram_bytes=");
+  Serial.println(ESP.getPsramSize());
 #if MICRI_CLUSTER_S3_SOFTWARE_WORKER
-  Serial.println("[headless] mining=core1 hardware SHA + core0 software helper");
+  Serial.println("[s3zero] workers=core1 hardware SHA + core0 software helper");
 #else
-  Serial.println("[headless] mining=core1 hardware SHA only");
+  Serial.println("[s3zero] workers=core1 hardware SHA only");
 #endif
-  Serial.println("[headless] hold BOOT 5s in app to return to LED menu");
+  Serial.println("[s3zero] BOOT: tap toggle LED; triple-tap clear pairing; hold 5s restart engine");
+  Serial.print("[s3zero] status LED=");
+  Serial.println(ledEnabled ? "enabled" : "disabled");
 
-  HeadlessApp autolaunchApp = HeadlessApp::Miner;
-  if (loadAutolaunchApp(autolaunchApp)) {
-    enterApp(autolaunchApp, millis());
-  } else {
-    Serial.println("[headless] no saved autolaunch; starting Slave Miner");
-    enterMiner(millis());
-  }
+  slave.begin();
+  printMac();
 }
 
 void loop() {
   const uint32_t nowMs = millis();
-  const ButtonEvent event = buttonTracker.update(buttonDown(), nowMs);
-
-  if (mode == Mode::Menu) {
-    updateMenu(event, nowMs);
-  } else {
-    handleAppButton(event, nowMs);
-    if (mode == Mode::Mouse) {
-      updateMouse(nowMs);
-    } else if (mode == Mode::Miner) {
-      slave.update();
-    }
-    updateLedForMode(nowMs);
-  }
-
+  handleButton(buttonTracker.update(buttonDown(), nowMs), nowMs);
+  slave.update();
+  updateLed(nowMs);
   printStats(nowMs);
   delay(1);
 }

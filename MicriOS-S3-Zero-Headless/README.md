@@ -1,169 +1,126 @@
 # MicriOS for S3-Zero Headless
 
-Headless ESP32-S3-Zero firmware for no-display Micri Deck nodes.
+Dedicated Distributed Miner slave firmware for no-display ESP32-S3-Zero nodes.
+It boots directly into the slave engine and contains no app launcher or Bluetooth
+Mouse Emulator.
 
-This target is tuned for ESP32-S3-Zero style boards with:
+The target is configured for ESP32-S3FH4R2-style boards with:
 
-- ESP32-S3 dual-core LX7 at 240 MHz
-- 4 MB flash
-- 2 MB PSRAM
-- USB-C native USB serial
+- dual-core ESP32-S3 LX7 at 240 MHz
+- 4 MB Quad-SPI flash
+- 2 MB Quad-SPI PSRAM
 - BOOT button on `GPIO0`
 - onboard WS2812 RGB LED on `GPIO21`
 
-Fresh boards default straight into **Slave Miner** so a cluster rack can boot
-and start looking for a Distributed Miner master without touching the button.
-Hold BOOT for 5 seconds while an app is running to return to the LED menu.
+The miner receives work over ESP-NOW. It does not need WiFi credentials, wallet
+settings, or pool settings; those belong to the screened Distributed Miner
+master.
 
-The LED menu still includes two apps:
+## Build And Upload
 
-- **Mouse Emulator**: Bluetooth HID mouse emulator using the Logitech profile.
-- **Slave Miner**: Distributed Miner ESP-NOW slave. This is the default launch
-  app when no saved autolaunch setting exists.
-
-## Flash
-
-Compile:
+Run from the repository root.
 
 ```powershell
-arduino-cli compile --fqbn esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,FlashMode=qio,FlashSize=4M,PartitionScheme=huge_app,PSRAM=opi,UploadSpeed=921600 MicriOS-S3-Zero-Headless
+arduino-cli compile --fqbn esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,FlashMode=qio,FlashSize=4M,PartitionScheme=huge_app,PSRAM=enabled,UploadSpeed=921600 MicriOS-S3-Zero-Headless
 ```
 
-Upload, replacing `COM11` with the connected port:
+Replace `COM11` with the connected port:
 
 ```powershell
-arduino-cli upload --fqbn esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,FlashMode=qio,FlashSize=4M,PartitionScheme=huge_app,PSRAM=opi,UploadSpeed=921600 --port COM11 MicriOS-S3-Zero-Headless
+arduino-cli upload --fqbn esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,FlashMode=qio,FlashSize=4M,PartitionScheme=huge_app,PSRAM=enabled,UploadSpeed=921600 --port COM11 MicriOS-S3-Zero-Headless
 ```
 
-## LED Menu
+`PSRAM=enabled` selects QSPI PSRAM. Do not use `PSRAM=opi` for the
+ESP32-S3FH4R2 package.
 
-The tested ESP32-S3-Zero style board is expected to use a WS2812 RGB LED on
-`GPIO21`. MicriOS drives it as a simple blue status LED.
+## RGB Status
 
-The menu repeats these slots:
+The LED uses restrained brightness so six nearby nodes remain readable without
+being dazzling.
 
-| LED menu pattern | Tap window action |
+| LED | Meaning |
 | --- | --- |
-| LED on 2 seconds, one short blink, LED off 2 seconds | Tap during the off window to open Mouse Emulator |
-| LED on 2 seconds, two short blinks, LED off 2 seconds | Tap during the off window to open Slave Miner |
+| Brief white at boot | Firmware and LED self-test |
+| Slow red pulse | No saved master; searching for pairing beacons |
+| Slow amber pulse | A master is saved but unavailable/stale; reconnecting |
+| Solid blue | Paired and awaiting work |
+| Solid green | Actively or recently mining |
+| Fast red flash | Miner, radio, task, or SHA validation error |
+| Brief purple | Slave engine restarted using BOOT |
+| Three cyan flashes | Saved master/cluster pairing cleared |
 
-If you miss the off-window tap, wait for the menu to cycle again.
+Green remains visible briefly between assignments so normal assignment turnover
+does not make the LED chatter between green and blue. Errors override temporary
+acknowledgement patterns. A single BOOT tap toggles all informational LED output.
+The choice is saved, so a silenced node remains dark after power cycling. Serial
+diagnostics continue normally while the LED is disabled.
 
-Double-tap anywhere in the LED menu to clear the saved autolaunch app. On the
-S3-Zero build, clearing the saved autolaunch returns the board to the factory
-default behavior: booting straight into Slave Miner.
-
-## Shared App Button Rules
+## BOOT Controls
 
 | Action | Result |
 | --- | --- |
-| 1 tap | No action, to avoid accidental taps |
-| 2 taps | Make the current app the saved autolaunch app |
-| Hold BOOT for 5 seconds | Exit the current app and return to the LED menu |
+| 1 tap | Enable or disable all informational LED output; saved across restarts |
+| 2 taps | No action |
+| 3 taps | Clear the saved master/cluster pairing and resume searching |
+| Hold for 5 seconds | Restart the slave engine without clearing pairing |
 
-## Mouse Emulator App
+## Pairing
 
-The headless Mouse Emulator always advertises as:
+1. Configure WiFi and miner pool settings on the screened master.
+2. Open **Distributed Miner** on the master and start the cluster.
+3. Open **Pair Slaves** and press B1.
+4. Power the S3-Zero. Its LED pulses red while searching, then becomes blue or
+   green after pairing and receiving work.
+
+If the node belongs to another cluster, triple-tap BOOT to clear its saved
+master before opening pairing on the new master.
+
+## Mining Architecture
+
+- Core 1 runs the ESP32-S3 register-level hardware SHA-256d worker.
+- The hardware peripheral uses its own first-block midstate representation.
+  The complete reference double-SHA is calculated before taking the SHA lock,
+  then the first hardware digest is compared against it. A mismatch selects
+  software fallback and reports an error state.
+- Core 0 optionally runs a baked-software helper. Hardware SHA is a single
+  shared peripheral, so the second worker cannot run another hardware engine.
+- Work arrives in adaptive multi-second assignments, with one future assignment
+  prefetched to reduce idle time.
+- ESP-NOW callbacks only enqueue packets. Worker tasks process state changes,
+  acknowledgements, retries, cancellation, and duplicate suppression.
+
+To build a hardware-only A/B image:
+
+```powershell
+arduino-cli compile --build-property "compiler.cpp.extra_flags=-DMICRI_CLUSTER_S3_SOFTWARE_WORKER=0" --fqbn esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,FlashMode=qio,FlashSize=4M,PartitionScheme=huge_app,PSRAM=enabled,UploadSpeed=921600 MicriOS-S3-Zero-Headless
+```
+
+Keep the software helper only if a five-minute test improves effective cluster
+hashrate by at least 5% without additional retries, queue drops, heat, or
+instability.
+
+## Serial Diagnostics
+
+Serial runs at `115200` baud. Boot output reports the detected chip, cores,
+flash, PSRAM, MAC address, and worker configuration. A status line follows every
+two seconds:
 
 ```text
-Logitech Signature M650
+[s3zero] build=v3.0 b86 state=Mining paired=yes ch=8 raw_khps=159.0 effective_khps=129.1 sha=hardware jobs=6 done=3 assign=67 progress=827392/1551264 rx_drop=0 result_retry=0 idle_ms=9718 heap=248564 stack=5560 stack2=6284 total_kh=2868 temp_c=65.6 led=off
 ```
 
-Mouse-specific button rules:
+Important fields:
 
-| Action | Result |
-| --- | --- |
-| 1 tap | No action |
-| 2 taps | Make Mouse Emulator the saved autolaunch app |
-| 3 taps | Clear saved Bluetooth mouse pairing, rotate the BLE address, and return to advertising / pairing mode |
-| Hold BOOT for 5 seconds | Exit to LED menu |
-
-## Slave Miner App
-
-Slave Miner waits for a MicriOS Distributed Miner master, pairs over ESP-NOW,
-and mines assigned nonce ranges.
-
-This S3-Zero target uses larger slave mining assignments and an ESP32-S3
-hardware SHA-256 worker on core 1. By default, core 0 also runs a baked software
-SHA helper; it can be disabled at compile time for performance comparisons. The
-slave accepts one queued next assignment from the master, which reduces idle
-time between batches without requiring constant ESP-NOW chatter.
-
-At the start of the first assignment, the hardware result is checked against
-the software implementation. The miner automatically falls back to software if
-validation fails. ESP-NOW callbacks only queue packets; the miner task applies
-state changes. Assignments and results use application acknowledgements and
-bounded retries, and every master run has a new session ID so delayed work from
-an earlier run is ignored.
-
-It still receives work over ESP-NOW; it does not need WiFi credentials, wallet
-settings, or pool settings.
-
-Slave Miner button rules:
-
-| Action | Result |
-| --- | --- |
-| 1 tap | No action |
-| 2 taps | Make Slave Miner the saved autolaunch app |
-| 3 taps | Clear saved master/cluster pairing |
-| Hold BOOT for 5 seconds | Exit to LED menu |
-
-Slave Miner LED cycles start with the app marker: LED on, two short blinks, LED
-on again, short off gap. Then one state pattern is shown for up to 5 seconds:
-
-| State pattern | Meaning |
-| --- | --- |
-| Solid on | Actively or recently mining |
-| Slow blink | Searching / not paired |
-| Very slow blink | Paired but idle |
-| Fast blink | Error |
-
-After the state pattern, the app marker repeats and the next state pattern is
-shown.
-
-## Pairing Slave Miner
-
-1. Flash and power the S3-Zero.
-2. On the T-Display or screened C3 master, open **Distributed Miner**.
-3. Start the cluster and open pairing mode.
-4. The S3-Zero should pair automatically and begin mining once the master has
-   pool work to distribute.
-
-If the S3-Zero was paired to another master or cluster, triple-tap while Slave
-Miner is running to clear the saved pairing.
-
-## Serial Output
-
-Serial runs at `115200` baud and prints a status line every 2 seconds.
-
-Miner example:
-
-```text
-[headless] build=v3.0 b86 mode=miner state=Mining paired=yes channel=6 khps=450.0 effective_khps=438.2 sha=hardware caps=0xF jobs=42 completed=41 total_kh=123456
-```
-
-Serial is useful for confirming pairing, WiFi channel, assignment size, and
-whether miner assignments are being completed. `khps` is raw assignment speed;
-`effective_khps` includes time between completed results. `sha=hardware`
-confirms that the self-test passed. `sha=software-fallback` means the hardware
-path failed validation and must be investigated. Rates move in steps rather
-than updating continuously during a long batch.
-
-## S3 Performance Comparison
-
-The default build enables the core-0 software helper. To compile a hardware-only
-comparison build without editing source:
-
-```powershell
-arduino-cli compile --build-property "compiler.cpp.extra_flags=-DMICRI_CLUSTER_S3_SOFTWARE_WORKER=0" --fqbn esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,FlashMode=qio,FlashSize=4M,PartitionScheme=huge_app,PSRAM=opi,UploadSpeed=921600 MicriOS-S3-Zero-Headless
-```
-
-Compare five-minute `khps` and `effective_khps` averages. Keep the software
-helper only if it produces a meaningful effective-rate improvement without
-causing radio instability, excessive heat, or button/LED starvation.
+- `sha=hardware`: the hardware digest self-test passed.
+- `sha=software-fallback`: hardware validation failed and needs investigation.
+- `raw_khps`: active hashing speed inside assignments.
+- `effective_khps`: rate including assignment and radio gaps.
+- `rx_drop` / `result_retry`: ESP-NOW reliability indicators.
+- `idle_ms`: cumulative paired time waiting without work.
+- `stack` / `stack2`: FreeRTOS stack high-water marks for the workers.
 
 ## Compatibility
 
-The acknowledgement/session changes use cluster protocol version 3. Masters
-and slaves must be built from the same b86-era source or newer; older cluster
-firmware will intentionally ignore these packets.
+The assignment acknowledgements and session IDs use cluster protocol version 3.
+Masters and slaves must use the b86-era protocol or newer; incompatible packets
+are intentionally ignored.

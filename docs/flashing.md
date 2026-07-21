@@ -11,7 +11,7 @@ Use Chrome or Edge on a desktop computer. Mobile browsers usually do not expose 
 - **MicriOS for C3**: ESP32-C3 with the 0.42 inch `72x40` OLED.
 - **MicriOS for T-Display**: classic ESP32 T-Display with `240x135` color TFT.
 - **MicriOS for C3 Headless**: no-screen ESP32-C3 with LED/button launcher, Mouse Emulator, and Distributed Miner slave.
-- **MicriOS for S3-Zero Headless**: no-screen ESP32-S3-Zero with WS2812 LED/button launcher and default Distributed Miner slave autolaunch.
+- **MicriOS for S3-Zero Headless**: dedicated no-screen ESP32-S3-Zero Distributed Miner slave with RGB status LED.
 
 ## Browser Flashing
 
@@ -101,7 +101,7 @@ arduino-cli upload --fqbn esp32:esp32:esp32c3:PartitionScheme=huge_app --port CO
 ```
 
 ```powershell
-arduino-cli upload --fqbn esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,FlashMode=qio,FlashSize=4M,PartitionScheme=huge_app,PSRAM=opi,UploadSpeed=921600 --port COM11 MicriOS-S3-Zero-Headless
+arduino-cli upload --fqbn esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,FlashMode=qio,FlashSize=4M,PartitionScheme=huge_app,PSRAM=enabled,UploadSpeed=921600 --port COM11 MicriOS-S3-Zero-Headless
 ```
 
 ```powershell
@@ -125,7 +125,7 @@ arduino-cli compile --export-binaries --fqbn esp32:esp32:esp32c3:PartitionScheme
 ```
 
 ```powershell
-arduino-cli compile --export-binaries --fqbn esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,FlashMode=qio,FlashSize=4M,PartitionScheme=huge_app,PSRAM=opi,UploadSpeed=921600 MicriOS-S3-Zero-Headless
+arduino-cli compile --export-binaries --fqbn esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,FlashMode=qio,FlashSize=4M,PartitionScheme=huge_app,PSRAM=enabled,UploadSpeed=921600 MicriOS-S3-Zero-Headless
 ```
 
 ```powershell
