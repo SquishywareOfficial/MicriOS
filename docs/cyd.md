@@ -57,14 +57,14 @@ they render immersively across `320x240` with no permanent bar. Tap the lower
 edge to reveal a temporary **Exit** control.
 
 The system bar also contains brightness, volume, and battery icons. Tap the
-sun to open a brightness slider entirely inside the 32-pixel bar; tap or drag
-the slider to preview the backlight level. The setting is persisted when the
-touch is released. The overlay is drawn once and subsequent drag samples
-redraw only the slider track to avoid full-width flashing. Volume and battery
-use the same shared control interface,
-but the current CYD hardware implementation shows `Not implemented` until
-speaker and battery-sensing hardware are added. The bar is redrawn only when
-its state changes, not on every animated app frame.
+sun or speaker to open its slider entirely inside the 32-pixel bar; tap or
+drag to preview the setting, then release to persist it. Volume digitally
+scales Media Player audio and defaults to a conservative 15 percent. Tapping
+the speaker icon inside the open volume slider toggles persisted mute without
+changing the volume percentage; muted speaker icons carry a red slash. Battery
+uses the same shared control interface but still shows `Not implemented`
+until sensing hardware is added. Overlays redraw only their slider track, and
+the normal bar is redrawn only when its state changes.
 
 ## Device Settings
 
@@ -74,6 +74,19 @@ The CYD Device settings page includes:
 - Touch recalibration.
 - Live raw/calibrated touch diagnostics.
 - Active-low onboard RGB LED test hooks.
+
+## Media Player
+
+The CYD build includes a touch-native SD Media Player for converted MJPEG/PCM
+AVI files. It uses the full 320x176 upper playback area with transport controls
+below it and retains the shell-owned Exit control. Conversion, SD layout,
+supported formats, and controls are documented in the
+[Media Player guide](media-player.md).
+
+The media player requires a dedicated hardware SPI host for the onboard SD
+slot. CYD touch therefore uses a small target-local software-SPI reader on its
+existing XPT2046 pins. This preserves the calibrated coordinate model while
+allowing touch and SD to remain active together.
 
 Games that used the C3 status LED use the CYD RGB LED for equivalent cues:
 landing burn timing, shift timing, fishing-line tension, and Micri Field timing.
@@ -115,6 +128,8 @@ Replace `COM20` with the port shown by `arduino-cli board list`.
 | Touch IRQ | 36 |
 | Touch MISO | 39 |
 | RGB red / green / blue | 4 / 16 / 17 |
+| SD CS / CLK / MOSI / MISO | 5 / 18 / 23 / 19 |
+| DAC audio / speaker | 26 |
 
 Cheap Yellow Display variants exist with different screens and wiring. This
 target is specifically for the PCB marked `ESP32-2432S028` using the profile

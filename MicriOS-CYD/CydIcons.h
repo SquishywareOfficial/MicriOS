@@ -45,6 +45,7 @@ enum class Icon : uint8_t {
   Communicator,
   Mouse,
   Reading,
+  Media,
   Device,
   Options,
   Autolaunch,
@@ -364,6 +365,15 @@ inline void draw(Canvas& canvas, Icon icon, int16_t cx, int16_t cy,
       canvas.drawFastVLine(cx, cy - 9, 22, color);
       canvas.drawLine(cx - 12, cy - 8, cx - 4, cy - 6, color);
       canvas.drawLine(cx + 12, cy - 8, cx + 4, cy - 6, color);
+      break;
+    case Icon::Media:
+      canvas.drawRoundRect(cx - 15, cy - 11, 30, 22, 3, color);
+      canvas.fillTriangle(cx - 4, cy - 7, cx - 4, cy + 7, cx + 8, cy,
+                          TFT_WHITE);
+      for (int8_t x = -11; x <= 11; x += 7) {
+        canvas.fillRect(cx + x, cy - 14, 4, 3, color);
+        canvas.fillRect(cx + x, cy + 12, 4, 3, color);
+      }
       break;
     case Icon::Device:
       canvas.drawRoundRect(cx - 11, cy - 13, 22, 26, 3, color);

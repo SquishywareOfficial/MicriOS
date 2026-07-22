@@ -66,7 +66,7 @@ if ($configInitExit -ne 0) {
 Invoke-ArduinoCli config set board_manager.additional_urls $Esp32BoardUrl
 Invoke-ArduinoCli core update-index
 Invoke-ArduinoCli core install esp32:esp32
-Invoke-ArduinoCli lib install U8g2 NimBLE-Arduino TFT_eSPI ArduinoJson XPT2046_Touchscreen
+Invoke-ArduinoCli lib install U8g2 NimBLE-Arduino TFT_eSPI ArduinoJson XPT2046_Touchscreen JPEGDEC
 
 foreach ($target in $Targets) {
   Sync-SharedCode -Sketch $target.Sketch

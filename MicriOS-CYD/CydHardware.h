@@ -24,6 +24,7 @@ constexpr uint8_t PIN_LED_RED = 4;
 constexpr uint8_t PIN_LED_GREEN = 16;
 constexpr uint8_t PIN_LED_BLUE = 17;
 constexpr uint8_t PIN_BOOT = 0;
+constexpr uint8_t PIN_AUDIO_DAC = 26;
 
 #ifndef MICRI_CYD_B1_PIN
 #define MICRI_CYD_B1_PIN -1
@@ -66,6 +67,15 @@ void clearCalibration();
 uint8_t loadBrightness();
 void saveBrightness(uint8_t level);
 void setBrightness(uint8_t level);
+
+uint8_t loadAudioVolume();
+void previewAudioVolume(uint8_t percent);
+void saveAudioVolume(uint8_t percent);
+uint8_t audioVolume();
+bool loadAudioMuted();
+void saveAudioMuted(bool muted);
+bool audioMuted();
+void holdAudioIdle();
 
 void setRgb(uint8_t red, uint8_t green, uint8_t blue);
 void setStatusLed(bool on);

@@ -15,6 +15,7 @@ struct State {
   bool implemented = false;
   bool adjustable = false;
   int16_t percent = -1;
+  bool muted = false;
 };
 
 class Provider {
@@ -24,6 +25,7 @@ class Provider {
   virtual State state(Control) const { return {}; }
   virtual void preview(Control, uint8_t) {}
   virtual void commit(Control, uint8_t) {}
+  virtual void setMuted(Control, bool) {}
 };
 
 constexpr uint32_t OVERLAY_TIMEOUT_MS = 5000;

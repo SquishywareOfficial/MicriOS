@@ -34,7 +34,7 @@ arduino-cli config init >/dev/null 2>&1 || true
 arduino-cli config set board_manager.additional_urls "$ESP32_BOARD_URL"
 arduino-cli core update-index
 arduino-cli core install esp32:esp32
-arduino-cli lib install U8g2 "NimBLE-Arduino" "TFT_eSPI" ArduinoJson XPT2046_Touchscreen
+arduino-cli lib install U8g2 "NimBLE-Arduino" "TFT_eSPI" ArduinoJson XPT2046_Touchscreen JPEGDEC
 
 for target in "${TARGETS[@]}"; do
   IFS='|' read -r sketch fqbn <<< "$target"

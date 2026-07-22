@@ -82,6 +82,10 @@ inline TouchUi::Rect systemControlTrackRect() {
   return {40, static_cast<int16_t>(H + 9), 238, 14};
 }
 
+inline TouchUi::Rect systemControlOverlayIconRect() {
+  return {4, static_cast<int16_t>(H + 4), 30, 24};
+}
+
 inline TouchUi::Rect systemControlCloseRect() {
   return {286, static_cast<int16_t>(H + 4), 30, 24};
 }
@@ -446,7 +450,8 @@ inline void systemButton(Canvas& canvas, const TouchUi::Rect& rect,
 template <typename Canvas>
 inline void drawSystemControlIcon(Canvas& canvas,
                                   SystemControls::Control control,
-                                  int16_t cx, int16_t cy, uint16_t color) {
+                                  int16_t cx, int16_t cy, uint16_t color,
+                                  bool muted = false) {
   if (control == SystemControls::Control::Brightness) {
     canvas.drawCircle(cx, cy, 4, color);
     canvas.fillCircle(cx, cy, 2, color);
@@ -468,6 +473,10 @@ inline void drawSystemControlIcon(Canvas& canvas,
     canvas.fillRect(cx - 9, cy - 3, 5, 7, color);
     canvas.fillTriangle(cx - 4, cy - 3, cx + 2, cy - 8,
                         cx + 2, cy + 8, color);
+    if (muted) {
+      canvas.drawLine(cx - 10, cy - 10, cx + 11, cy + 10, TFT_RED);
+      canvas.drawLine(cx - 9, cy - 10, cx + 12, cy + 10, TFT_RED);
+    }
     return;
   }
 
@@ -524,7 +533,7 @@ inline void systemBar(Canvas& canvas, const char* title, bool showNavigation,
                                       : TFT_CYAN)
                                : TFT_DARKGREY;
     drawSystemControlIcon(canvas, controls[i], rect.x + rect.w / 2,
-                          rect.y + rect.h / 2, color);
+                           rect.y + rect.h / 2, color, states[i].muted);
   }
 }
 
@@ -574,7 +583,8 @@ inline void systemControlOverlay(Canvas& canvas,
   canvas.fillRect(0, H, W, SYSTEM_BAR_H, TFT_BLACK);
   canvas.drawFastHLine(0, H, W, TFT_DARKGREY);
   drawSystemControlIcon(canvas, control, 19, H + SYSTEM_BAR_H / 2,
-                        state.implemented ? TFT_YELLOW : TFT_DARKGREY);
+                         state.implemented ? TFT_YELLOW : TFT_DARKGREY,
+                         state.muted);
 
   if (state.implemented && state.adjustable && state.percent >= 0) {
     systemControlTrack(canvas, state);

@@ -49,7 +49,7 @@ jobs:
         run: arduino-cli core update-index && arduino-cli core install esp32:esp32
 
       - name: Install libraries
-        run: arduino-cli lib install U8g2 "NimBLE-Arduino" "TFT_eSPI" ArduinoJson XPT2046_Touchscreen
+        run: arduino-cli lib install U8g2 "NimBLE-Arduino" "TFT_eSPI" ArduinoJson XPT2046_Touchscreen JPEGDEC
 
       - name: Prepare shared code
         shell: bash

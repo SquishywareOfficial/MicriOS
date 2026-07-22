@@ -11,6 +11,7 @@ Quick links:
 - [Documentation index](docs/README.md)
 - [Flashing guide](docs/flashing.md)
 - [ESP32-CYD touch build](docs/cyd.md)
+- [Media Player guide](docs/media-player.md)
 - [Game guides](docs/games.md)
 - [Mouse Emulator (Mouse Jiggler) guide](docs/mouse-emulator.md)
 - [Micri Miner guide](docs/micri-miner.md)
@@ -112,6 +113,13 @@ Radio and network utilities:
 - **Micri Miner** is a solo Stratum miner with wallet/pool setup. See the [Micri Miner guide](docs/micri-miner.md).
 - **Distributed Miner** lets one screened board coordinate nearby ESP-NOW mining slaves. The T-Display master supports a saved portrait dashboard for upright cluster use. See the [Distributed Miner guide](docs/distributed-miner.md).
 
+CYD media:
+
+- **Media Player** browses a microSD card and plays ESP32-friendly MJPEG/PCM
+  AVI video or uncompressed PCM WAV audio with direct touch controls and
+  GPIO26 DAC audio. See the
+  [Media Player guide](docs/media-player.md).
+
 Device settings and save data can be managed from **Options / Save Manager**. Save Manager can clear individual app data such as scores, contacts, WiFi profiles, miner settings, miner lifetime stats, and cluster pairing data.
 
 ## Building From Source
@@ -145,6 +153,7 @@ The build scripts do not bump `Version.h`. Release/version bumps should be made 
 - `sim/`: browser-based C3 simulator and editors.
 - `docs/`: focused documentation for flashing and larger app workflows.
 - `licenses/`: third-party license notices.
+- `tools/`: host-side helpers, including CYD media conversion with FFmpeg.
 
 ## Browser Installer And Simulator
 
@@ -158,3 +167,8 @@ The flasher currently supports the C3 OLED, T-Display, CYD, headless C3, and hea
 MicriOS is released under WTFPL + No Warranty Disclaimer. See [LICENSE](LICENSE).
 
 Micri Miner includes MIT-attributed mining/Stratum logic adapted from NerdMiner_v2. See [licenses/NerdMiner_v2-MIT.txt](licenses/NerdMiner_v2-MIT.txt).
+
+The CYD media player uses the Apache-2.0 JPEGDEC library. Its target-local
+software-SPI touch reader is adapted from Paul Stoffregen's MIT-licensed
+XPT2046_Touchscreen library; see
+[licenses/XPT2046-Touchscreen-MIT.txt](licenses/XPT2046-Touchscreen-MIT.txt).

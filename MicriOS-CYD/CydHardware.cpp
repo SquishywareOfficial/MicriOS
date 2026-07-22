@@ -1,9 +1,7 @@
 #include "CydHardware.h"
 
 #include <Preferences.h>
-#include <SPI.h>
 #include <TFT_eSPI.h>
-#include <XPT2046_Touchscreen.h>
 
 namespace CydHardware {
 namespace {
@@ -13,16 +11,88 @@ constexpr const char* CAL_LAYOUT_KEY = "calver";
 constexpr uint8_t CAL_LAYOUT_VERSION = 3;
 constexpr const char* BRIGHTNESS_KEY = "bright";
 constexpr uint8_t DEFAULT_BRIGHTNESS = 13;
-constexpr uint16_t TOUCH_MIN_PRESSURE = 120;
+constexpr const char* AUDIO_VOLUME_KEY = "volume";
+constexpr uint8_t DEFAULT_AUDIO_VOLUME = 15;
+constexpr const char* AUDIO_MUTED_KEY = "muted";
+constexpr uint16_t TOUCH_MIN_PRESSURE = 400;
+constexpr uint32_t BACKLIGHT_PWM_HZ = 25000;
 
-SPIClass touchSpi(VSPI);
-XPT2046_Touchscreen touch(PIN_TOUCH_CS, PIN_TOUCH_IRQ);
 Preferences prefs;
 Calibration currentCalibration;
 bool touchReady = false;
 uint8_t activeDisplayRotation = PREFERRED_DISPLAY_ROTATION;
 bool displayRotationSelected = false;
 bool backlightReady = false;
+uint8_t currentAudioVolume = DEFAULT_AUDIO_VOLUME;
+bool currentAudioMuted = false;
+
+// The command sequence and best-two sampling follow Paul Stoffregen's
+// MIT-licensed XPT2046_Touchscreen driver. Bit-banging this target-local bus
+// leaves the ESP32 VSPI host available for the CYD microSD slot.
+uint8_t touchTransfer8(uint8_t output) {
+  uint8_t input = 0;
+  for (int8_t bit = 7; bit >= 0; --bit) {
+    digitalWrite(PIN_TOUCH_MOSI, (output >> bit) & 1U);
+    digitalWrite(PIN_TOUCH_CLK, HIGH);
+    input = static_cast<uint8_t>((input << 1) |
+                                 (digitalRead(PIN_TOUCH_MISO) ? 1 : 0));
+    digitalWrite(PIN_TOUCH_CLK, LOW);
+  }
+  return input;
+}
+
+uint16_t touchTransfer16(uint16_t output) {
+  return static_cast<uint16_t>(touchTransfer8(output >> 8) << 8) |
+         touchTransfer8(output & 0xff);
+}
+
+int16_t bestTwoAverage(int16_t first, int16_t second, int16_t third) {
+  const int16_t firstSecond = abs(first - second);
+  const int16_t firstThird = abs(first - third);
+  const int16_t secondThird = abs(second - third);
+  if (firstSecond <= firstThird && firstSecond <= secondThird) {
+    return (first + second) >> 1;
+  }
+  if (firstThird <= firstSecond && firstThird <= secondThird) {
+    return (first + third) >> 1;
+  }
+  return (second + third) >> 1;
+}
+
+RawTouchSample readTouchController() {
+  RawTouchSample sample;
+  if (!touchReady || digitalRead(PIN_TOUCH_IRQ) != LOW) return sample;
+
+  int16_t data[6] = {};
+  digitalWrite(PIN_TOUCH_CS, LOW);
+  touchTransfer8(0xB1);
+  const int16_t z1 = touchTransfer16(0xC1) >> 3;
+  int16_t pressure = z1 + 4095;
+  const int16_t z2 = touchTransfer16(0x91) >> 3;
+  pressure -= z2;
+  if (pressure >= TOUCH_MIN_PRESSURE) {
+    touchTransfer16(0x91);
+    data[0] = touchTransfer16(0xD1) >> 3;
+    data[1] = touchTransfer16(0x91) >> 3;
+    data[2] = touchTransfer16(0xD1) >> 3;
+    data[3] = touchTransfer16(0x91) >> 3;
+  }
+  data[4] = touchTransfer16(0xD0) >> 3;
+  data[5] = touchTransfer16(0) >> 3;
+  digitalWrite(PIN_TOUCH_CS, HIGH);
+
+  if (pressure < TOUCH_MIN_PRESSURE) return sample;
+  const int16_t measuredX = bestTwoAverage(data[0], data[2], data[4]);
+  const int16_t measuredY = bestTwoAverage(data[1], data[3], data[5]);
+
+  // Match XPT2046_Touchscreen rotation 0 so existing calibration remains
+  // valid. Software SPI leaves hardware VSPI available for the CYD SD slot.
+  sample.down = true;
+  sample.x = 4095 - measuredY;
+  sample.y = measuredX;
+  sample.pressure = pressure;
+  return sample;
+}
 
 int16_t clampCoordinate(int32_t value, int16_t maximum) {
   if (value < 0) return 0;
@@ -85,6 +155,7 @@ void begin() {
   pinMode(PIN_LED_GREEN, OUTPUT);
   pinMode(PIN_LED_BLUE, OUTPUT);
   setRgb(0, 0, 0);
+  holdAudioIdle();
 
   configureOptionalButton(MICRI_CYD_B1_PIN);
   configureOptionalButton(MICRI_CYD_B2_PIN);
@@ -95,7 +166,7 @@ void begin() {
 void beginBacklight() {
   // Attach after TFT_eSPI::init(). Some TFT_eSPI setups drive TFT_BL as a
   // normal GPIO during init, which silently detaches or overrides LEDC PWM.
-  backlightReady = ledcAttach(PIN_BACKLIGHT, 5000, 8);
+  backlightReady = ledcAttach(PIN_BACKLIGHT, BACKLIGHT_PWM_HZ, 8);
   Serial.printf("[cyd] backlight pwm %s pin=%u\n",
                 backlightReady ? "ready" : "failed", PIN_BACKLIGHT);
   setBrightness(loadBrightness());
@@ -131,23 +202,22 @@ uint8_t displayRotation() {
 }
 
 bool beginTouch() {
-  touchSpi.begin(PIN_TOUCH_CLK, PIN_TOUCH_MISO, PIN_TOUCH_MOSI, PIN_TOUCH_CS);
-  touchReady = touch.begin(touchSpi);
-  touch.setRotation(0);
+  pinMode(PIN_TOUCH_CLK, OUTPUT);
+  pinMode(PIN_TOUCH_MOSI, OUTPUT);
+  pinMode(PIN_TOUCH_MISO, INPUT);
+  pinMode(PIN_TOUCH_CS, OUTPUT);
+  pinMode(PIN_TOUCH_IRQ, INPUT);
+  digitalWrite(PIN_TOUCH_CLK, LOW);
+  digitalWrite(PIN_TOUCH_MOSI, LOW);
+  digitalWrite(PIN_TOUCH_CS, HIGH);
+  touchReady = true;
   Serial.print("[cyd] touch ");
-  Serial.println(touchReady ? "ready" : "failed");
+  Serial.println("ready (software SPI)");
   return touchReady;
 }
 
 RawTouchSample readRawTouch() {
-  RawTouchSample sample;
-  if (!touchReady || !touch.tirqTouched() || !touch.touched()) return sample;
-  const TS_Point point = touch.getPoint();
-  sample.pressure = point.z;
-  sample.down = point.z >= TOUCH_MIN_PRESSURE;
-  sample.x = point.x;
-  sample.y = point.y;
-  return sample;
+  return readTouchController();
 }
 
 TouchUi::TouchSample readTouch() {
@@ -248,12 +318,62 @@ void setBrightness(uint8_t level) {
   level = constrain(level, 1, 16);
   const uint8_t duty = static_cast<uint8_t>(8 + (level - 1) * 247 / 15);
   if (!backlightReady) {
-    backlightReady = ledcAttach(PIN_BACKLIGHT, 5000, 8);
+    backlightReady = ledcAttach(PIN_BACKLIGHT, BACKLIGHT_PWM_HZ, 8);
   }
   if (!ledcWrite(PIN_BACKLIGHT, duty)) {
     Serial.printf("[cyd] backlight write failed level=%u duty=%u\n", level,
                   duty);
   }
+}
+
+uint8_t loadAudioVolume() {
+  prefs.begin(PREF_NAMESPACE, true);
+  currentAudioVolume =
+      constrain(prefs.getUChar(AUDIO_VOLUME_KEY, DEFAULT_AUDIO_VOLUME), 0, 100);
+  prefs.end();
+  return currentAudioVolume;
+}
+
+void previewAudioVolume(uint8_t percent) {
+  currentAudioVolume = constrain(percent, 0, 100);
+}
+
+void saveAudioVolume(uint8_t percent) {
+  previewAudioVolume(percent);
+  prefs.begin(PREF_NAMESPACE, false);
+  prefs.putUChar(AUDIO_VOLUME_KEY, currentAudioVolume);
+  prefs.end();
+}
+
+uint8_t audioVolume() {
+  return currentAudioVolume;
+}
+
+bool loadAudioMuted() {
+  prefs.begin(PREF_NAMESPACE, true);
+  currentAudioMuted = prefs.getBool(AUDIO_MUTED_KEY, false);
+  prefs.end();
+  return currentAudioMuted;
+}
+
+void saveAudioMuted(bool muted) {
+  currentAudioMuted = muted;
+  prefs.begin(PREF_NAMESPACE, false);
+  prefs.putBool(AUDIO_MUTED_KEY, currentAudioMuted);
+  prefs.end();
+}
+
+bool audioMuted() {
+  return currentAudioMuted;
+}
+
+void holdAudioIdle() {
+  // The CYD's SC8002B amplifier is permanently enabled and AC-coupled to
+  // GPIO26. Keep the DAC-side input low impedance when I2S is not using it so
+  // the amplifier cannot turn a floating pin into an audible whine.
+  dacDisable(PIN_AUDIO_DAC);
+  pinMode(PIN_AUDIO_DAC, OUTPUT);
+  digitalWrite(PIN_AUDIO_DAC, LOW);
 }
 
 void setRgb(uint8_t red, uint8_t green, uint8_t blue) {

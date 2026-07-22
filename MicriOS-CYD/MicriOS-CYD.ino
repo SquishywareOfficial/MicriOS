@@ -25,6 +25,7 @@
 #include "src/apps/DistributedMinerApp.h"
 #include "src/apps/EspContactsApp.h"
 #include "src/apps/MetronomeApp.h"
+#include "src/apps/MediaPlayerApp.h"
 #include "src/apps/MicriMinerApp.h"
 #include "src/apps/MouseEmulatorApp.h"
 #include "src/apps/OptionsApp.h"
@@ -65,7 +66,11 @@ constexpr uint16_t AUTO_LAUNCH_NOTICE_MS = 2000;
 
 class CydSystemControlProvider final : public SystemControls::Provider {
  public:
-  void begin() { brightnessLevel_ = CydHardware::loadBrightness(); }
+  void begin() {
+    brightnessLevel_ = CydHardware::loadBrightness();
+    volumePercent_ = CydHardware::loadAudioVolume();
+    volumeMuted_ = CydHardware::loadAudioMuted();
+  }
 
   void refreshBrightness() {
     brightnessLevel_ = CydHardware::loadBrightness();
@@ -76,25 +81,43 @@ class CydSystemControlProvider final : public SystemControls::Provider {
       return {true, true,
               SystemControls::percentFromLevel(brightnessLevel_, 1, 16)};
     }
+    if (control == SystemControls::Control::Volume) {
+      return {true, true, volumePercent_, volumeMuted_};
+    }
     return {};
   }
 
   void preview(SystemControls::Control control, uint8_t percent) override {
-    if (control != SystemControls::Control::Brightness) return;
-    const uint8_t next = SystemControls::levelFromPercent(percent, 1, 16);
-    if (next == brightnessLevel_) return;
-    brightnessLevel_ = next;
-    CydHardware::setBrightness(brightnessLevel_);
+    if (control == SystemControls::Control::Brightness) {
+      const uint8_t next = SystemControls::levelFromPercent(percent, 1, 16);
+      if (next == brightnessLevel_) return;
+      brightnessLevel_ = next;
+      CydHardware::setBrightness(brightnessLevel_);
+    } else if (control == SystemControls::Control::Volume) {
+      volumePercent_ = SystemControls::clampPercent(percent);
+      CydHardware::previewAudioVolume(volumePercent_);
+    }
   }
 
   void commit(SystemControls::Control control, uint8_t percent) override {
-    if (control != SystemControls::Control::Brightness) return;
     preview(control, percent);
-    CydHardware::saveBrightness(brightnessLevel_);
+    if (control == SystemControls::Control::Brightness) {
+      CydHardware::saveBrightness(brightnessLevel_);
+    } else if (control == SystemControls::Control::Volume) {
+      CydHardware::saveAudioVolume(volumePercent_);
+    }
+  }
+
+  void setMuted(SystemControls::Control control, bool muted) override {
+    if (control != SystemControls::Control::Volume) return;
+    volumeMuted_ = muted;
+    CydHardware::saveAudioMuted(volumeMuted_);
   }
 
  private:
   uint8_t brightnessLevel_ = 13;
+  uint8_t volumePercent_ = 15;
+  bool volumeMuted_ = false;
 };
 
 CounterApp counterApp(SCREEN_WIDTH, SCREEN_HEIGHT);
@@ -118,6 +141,7 @@ AutoLaunchSettingsApp autoLaunchSettingsApp(SCREEN_WIDTH, SCREEN_HEIGHT);
 CydDeviceSettingsApp cydDeviceSettingsApp(SCREEN_WIDTH, SCREEN_HEIGHT);
 PetSimulatorApp petSimulatorApp(SCREEN_WIDTH, SCREEN_HEIGHT);
 ReadingApp readingApp(SCREEN_WIDTH, SCREEN_HEIGHT);
+MediaPlayerApp mediaPlayerApp(SCREEN_WIDTH, SCREEN_HEIGHT);
 
 AlienRaidersGame alienRaidersGame(SCREEN_WIDTH, SCREEN_HEIGHT);
 MicriCasinoGame micriCasinoGame(SCREEN_WIDTH, SCREEN_HEIGHT);
@@ -194,6 +218,7 @@ MenuEntry appsMenu[] = {
     {nullptr, MenuAction::Launch, &communicatorApp, CydIcons::Icon::Communicator},
     {nullptr, MenuAction::Launch, &mouseEmulatorApp, CydIcons::Icon::Mouse},
     {nullptr, MenuAction::Launch, &readingApp, CydIcons::Icon::Reading},
+    {nullptr, MenuAction::Launch, &mediaPlayerApp, CydIcons::Icon::Media},
 };
 
 MenuEntry settingsMenu[] = {
@@ -212,7 +237,7 @@ App* autoLaunchChoices[] = {
     &clockApp, &stopwatchApp, &countdownApp, &counterApp, &diceRollerApp,
     &coinFlipperApp, &randomNumberApp, &screenSaverApp, &metronomeApp,
     &micriMinerApp, &distributedMinerApp, &espContactsApp, &communicatorApp,
-    &mouseEmulatorApp, &readingApp,
+    &mouseEmulatorApp, &readingApp, &mediaPlayerApp,
 };
 
 constexpr uint16_t ROOT_COUNT = sizeof(rootMenu) / sizeof(rootMenu[0]);
@@ -398,6 +423,17 @@ bool updateSystemBarTouch(uint32_t nowMs) {
     if (touchEvent.tap &&
         CydUi::systemControlCloseRect().contains(touchEvent.point)) {
       closeSystemControl();
+      return true;
+    }
+
+    if (openSystemControl == SystemControls::Control::Volume &&
+        touchEvent.tap &&
+        CydUi::systemControlOverlayIconRect().contains(touchEvent.point)) {
+      systemControlProvider.setMuted(SystemControls::Control::Volume,
+                                     !state.muted);
+      systemControlLastInteractionMs = nowMs;
+      systemControlOverlayDrawn = false;
+      systemBarDirty = true;
       return true;
     }
 
@@ -616,6 +652,7 @@ TouchUi::ControlProfile controlProfileFor(const App* app) {
       app == &micriMinerApp || app == &distributedMinerApp ||
       app == &espContactsApp || app == &communicatorApp ||
       app == &mouseEmulatorApp || app == &readingApp ||
+      app == &mediaPlayerApp ||
       app == &wifiSetupApp || app == &optionsApp || app == &creditsApp ||
       app == &autoLaunchSettingsApp || app == &cydDeviceSettingsApp) {
     return {ControlMode::Direct, LogicalButton::None, LogicalButton::None};
