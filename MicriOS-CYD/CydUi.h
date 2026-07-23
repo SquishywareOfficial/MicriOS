@@ -57,6 +57,10 @@ inline TouchUi::Rect backRect() {
           static_cast<int16_t>(SYSTEM_BAR_H - 8)};
 }
 
+inline TouchUi::Rect childModeBadgeRect() {
+  return {164, static_cast<int16_t>(H + 6), 58, 20};
+}
+
 inline TouchUi::Rect menuPreviousPageRect() {
   return {218, 4, 34, 28};
 }
@@ -505,7 +509,8 @@ inline void systemBar(Canvas& canvas, const char* title, bool showNavigation,
                       const char* navigationLabel,
                       const SystemControls::State& brightness,
                       const SystemControls::State& volume,
-                      const SystemControls::State& battery) {
+                      const SystemControls::State& battery,
+                      const char* childTime = nullptr) {
   canvas.fillRect(0, H, W, SYSTEM_BAR_H, TFT_BLACK);
   canvas.drawFastHLine(0, H, W, TFT_DARKGREY);
   if (showNavigation) {
@@ -516,9 +521,20 @@ inline void systemBar(Canvas& canvas, const char* title, bool showNavigation,
   canvas.setTextSize(1);
   canvas.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
   const int16_t titleX = showNavigation ? 69 : 10;
-  const int16_t titleRight = 218;
+  const int16_t titleRight = childTime == nullptr ? 218 : 161;
   const String fitted = fitText(canvas, title, titleRight - titleX);
   canvas.drawString(fitted, titleX, H + 11);
+
+  if (childTime != nullptr) {
+    const TouchUi::Rect badge = childModeBadgeRect();
+    canvas.drawRoundRect(badge.x, badge.y, badge.w, badge.h, 4, TFT_ORANGE);
+    canvas.setTextSize(1);
+    canvas.setTextColor(TFT_ORANGE, TFT_BLACK);
+    const String timeText = fitText(canvas, childTime, badge.w - 6);
+    canvas.drawString(timeText,
+                      badge.x + (badge.w - canvas.textWidth(timeText)) / 2,
+                      badge.y + 6);
+  }
 
   const SystemControls::Control controls[] = {
       SystemControls::Control::Brightness,

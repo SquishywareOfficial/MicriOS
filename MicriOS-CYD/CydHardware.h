@@ -76,6 +76,14 @@ bool loadAudioMuted();
 void saveAudioMuted(bool muted);
 bool audioMuted();
 void holdAudioIdle();
+void playNotificationBeep();
+
+// Attempts the target's lowest-power child-lock state. The current all-app CYD
+// image cannot link ESP-IDF's ext0 deep-sleep support within the classic
+// ESP32's IRAM budget, so this currently selects the dim locked fallback and
+// returns false. A future successful deep-sleep implementation will not return.
+bool enterChildLockDeepSleep();
+void dimForLockedFallback();
 
 void setRgb(uint8_t red, uint8_t green, uint8_t blue);
 void setStatusLed(bool on);

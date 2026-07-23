@@ -75,6 +75,29 @@ The CYD Device settings page includes:
 - Live raw/calibrated touch diagnostics.
 - Active-low onboard RGB LED test hooks.
 
+## Child Mode
+
+**Options / Child Mode** adds a six-digit parental PIN and RAM-only timed
+access sessions. When enabled, every reboot stops at the parent keypad before
+autolaunch or the main menu. A parent can unlock the device for 10, 20, 30,
+60, or 120 minutes, or choose unlimited access until the next reboot.
+
+The amber system-bar badge shows the remaining minute bucket while a timed
+session is active. All time counts, including games, paused media, settings,
+WiFi, BLE, and mining. On expiry MicriOS exits the active app through its normal
+cleanup path, stops radio/audio activity, sounds one short notification, and
+shows the locked time-up screen. The current full-suite CYD image does not have
+enough free IRAM to link ESP-IDF's ext0 deep-sleep implementation, so after the
+warning it uses a dim, radio-off locked screen that remains touch responsive.
+
+Child Mode is a practical parental restriction rather than hardened security.
+The recovery PIN is `420420`. Configuration and the salted PIN hash are stored
+in Preferences; active timers and unlimited sessions are deliberately never
+persisted. Triple-tap the amber `Kid` timer in the system bar to lock the device
+immediately. Parents can also add a custom boot splash with editable text and
+six color palettes. See the [Child Mode guide](child-mode.md) for setup and
+recovery.
+
 ## Media Player
 
 The CYD build includes a touch-native SD Media Player for converted MJPEG/PCM

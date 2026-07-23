@@ -6,6 +6,7 @@ Focused docs for MicriOS setup, flashing, and larger app workflows.
 
 - [Flashing MicriOS](flashing.md)
 - [ESP32-CYD touch build](cyd.md)
+- [CYD Child Mode](child-mode.md)
 - [CYD Media Player](media-player.md)
 - [Game guides](games.md)
 - [Mouse Emulator (Mouse Jiggler)](mouse-emulator.md)

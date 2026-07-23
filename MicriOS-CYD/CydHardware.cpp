@@ -16,6 +16,8 @@ constexpr uint8_t DEFAULT_AUDIO_VOLUME = 15;
 constexpr const char* AUDIO_MUTED_KEY = "muted";
 constexpr uint16_t TOUCH_MIN_PRESSURE = 400;
 constexpr uint32_t BACKLIGHT_PWM_HZ = 25000;
+constexpr uint32_t BEEP_FREQUENCY_HZ = 720;
+constexpr uint32_t BEEP_DURATION_MS = 75;
 
 Preferences prefs;
 Calibration currentCalibration;
@@ -374,6 +376,34 @@ void holdAudioIdle() {
   dacDisable(PIN_AUDIO_DAC);
   pinMode(PIN_AUDIO_DAC, OUTPUT);
   digitalWrite(PIN_AUDIO_DAC, LOW);
+}
+
+void playNotificationBeep() {
+  if (currentAudioMuted || currentAudioVolume == 0) return;
+  if (!ledcAttach(PIN_AUDIO_DAC, BEEP_FREQUENCY_HZ, 8)) return;
+  const uint8_t duty = static_cast<uint8_t>(
+      5 + static_cast<uint16_t>(currentAudioVolume) * 45 / 100);
+  ledcWrite(PIN_AUDIO_DAC, duty);
+  delay(BEEP_DURATION_MS);
+  ledcWrite(PIN_AUDIO_DAC, 0);
+  ledcDetach(PIN_AUDIO_DAC);
+  holdAudioIdle();
+}
+
+bool enterChildLockDeepSleep() {
+  // The complete CYD firmware already sits close to the classic ESP32's IRAM
+  // ceiling. ESP-IDF's ext0/deep-sleep path adds about 1.8 KB of IRAM and
+  // overflows this all-app image, so use the documented locked fallback until
+  // enough IRAM can be reclaimed. The shell keeps polling touch for a parent.
+  Serial.println("[kidmode] deep sleep unavailable; using dim locked mode");
+  dimForLockedFallback();
+  return false;
+}
+
+void dimForLockedFallback() {
+  setBrightness(1);
+  setRgb(0, 0, 0);
+  holdAudioIdle();
 }
 
 void setRgb(uint8_t red, uint8_t green, uint8_t blue) {

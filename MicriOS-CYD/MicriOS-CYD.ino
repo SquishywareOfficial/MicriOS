@@ -2,14 +2,18 @@
 #include <Preferences.h>
 #include <SPI.h>
 #include <TFT_eSPI.h>
+#include <WiFi.h>
 #include <Wire.h>
+#include <esp_timer.h>
 
 #include "App.h"
 #include "CydFramebuffer.h"
 #include "CydHardware.h"
 #include "CydIcons.h"
+#include "CydKidModeUi.h"
 #include "CydUi.h"
 #include "src/shared/Version.h"
+#include "src/shared/logic/KidModeStorage.h"
 #include "src/shared/logic/SystemControls.h"
 #include "src/shared/logic/TouchUi.h"
 
@@ -62,6 +66,7 @@ TFT_eSPI tft;
 constexpr uint16_t SCREEN_WIDTH = CydHardware::SCREEN_WIDTH;
 constexpr uint16_t SCREEN_HEIGHT = CydHardware::CONTENT_HEIGHT;
 constexpr uint16_t BOOT_SPLASH_MS = 2000;
+constexpr uint16_t CUSTOM_BOOT_SPLASH_MS = 2500;
 constexpr uint16_t AUTO_LAUNCH_NOTICE_MS = 2000;
 
 class CydSystemControlProvider final : public SystemControls::Provider {
@@ -74,6 +79,11 @@ class CydSystemControlProvider final : public SystemControls::Provider {
 
   void refreshBrightness() {
     brightnessLevel_ = CydHardware::loadBrightness();
+  }
+
+  void restoreBrightness() {
+    refreshBrightness();
+    CydHardware::setBrightness(brightnessLevel_);
   }
 
   SystemControls::State state(SystemControls::Control control) const override {
@@ -120,6 +130,9 @@ class CydSystemControlProvider final : public SystemControls::Provider {
   bool volumeMuted_ = false;
 };
 
+KidMode::Storage kidModeStorage;
+KidMode::Service kidModeService;
+
 CounterApp counterApp(SCREEN_WIDTH, SCREEN_HEIGHT);
 MouseEmulatorApp mouseEmulatorApp(SCREEN_WIDTH, SCREEN_HEIGHT);
 DiceRollerApp diceRollerApp(SCREEN_WIDTH, SCREEN_HEIGHT);
@@ -136,7 +149,8 @@ WiFiSetupApp wifiSetupApp(SCREEN_WIDTH, SCREEN_HEIGHT);
 EspContactsApp espContactsApp(SCREEN_WIDTH, SCREEN_HEIGHT);
 CommunicatorApp communicatorApp(SCREEN_WIDTH, SCREEN_HEIGHT);
 CreditsApp creditsApp(SCREEN_WIDTH, SCREEN_HEIGHT);
-OptionsApp optionsApp(SCREEN_WIDTH, SCREEN_HEIGHT);
+OptionsApp optionsApp(SCREEN_WIDTH, SCREEN_HEIGHT, kidModeService,
+                      kidModeStorage);
 AutoLaunchSettingsApp autoLaunchSettingsApp(SCREEN_WIDTH, SCREEN_HEIGHT);
 CydDeviceSettingsApp cydDeviceSettingsApp(SCREEN_WIDTH, SCREEN_HEIGHT);
 PetSimulatorApp petSimulatorApp(SCREEN_WIDTH, SCREEN_HEIGHT);
@@ -263,10 +277,12 @@ TouchUi::TouchSample touchSample;
 TouchUi::TouchEvent touchEvent;
 
 bool bootSplashActive = true;
+bool customBootSplashActive = false;
 bool bootReleasePending = false;
 bool autoLaunchAttempted = false;
 bool autoLaunchNoticeActive = false;
 uint32_t bootStartedAtMs = 0;
+uint32_t customBootSplashStartedAtMs = 0;
 uint32_t autoLaunchNoticeStartedAtMs = 0;
 String pendingAutoLaunchTitle;
 bool pendingAutoLaunchAutoRun = false;
@@ -282,6 +298,29 @@ uint8_t pendingSystemControlPercent = 0;
 uint32_t systemControlLastInteractionMs = 0;
 bool systemControlOverlayDrawn = false;
 uint32_t lastSystemControlDrawMs = 0;
+KidMode::SplashSettings bootChildSplashSettings;
+
+enum class ChildShellScreen : uint8_t {
+  None,
+  Pin,
+  Duration,
+  Expired
+};
+
+ChildShellScreen childShellScreen = ChildShellScreen::None;
+KidMode::PinEntry childShellPin;
+KidMode::AuthLockout childShellLockout;
+TouchUi::ControlCapture childShellCapture;
+String childShellPrompt = "Parent PIN required";
+String childTimeLabel;
+bool childShellDirty = false;
+uint32_t childRenderedCountdown = UINT32_MAX;
+uint64_t childExpiredSleepAtUs = 0;
+uint8_t childBadgeTapCount = 0;
+uint32_t childBadgeFirstTapMs = 0;
+
+constexpr uint8_t CHILD_BADGE_LOCK_TAPS = 3;
+constexpr uint32_t CHILD_BADGE_TAP_WINDOW_MS = 1500;
 
 MenuEntry* currentEntries() {
   switch (currentMenu) {
@@ -369,7 +408,8 @@ void drawSystemBarIfDirty() {
       activeApp == nullptr ? "Back" : "Exit",
       systemControlProvider.state(SystemControls::Control::Brightness),
       systemControlProvider.state(SystemControls::Control::Volume),
-      systemControlProvider.state(SystemControls::Control::Battery));
+      systemControlProvider.state(SystemControls::Control::Battery),
+      childTimeLabel.length() == 0 ? nullptr : childTimeLabel.c_str());
 }
 
 bool updateImmersiveChromeTouch(uint32_t nowMs) {
@@ -408,6 +448,11 @@ bool updateImmersiveChromeTouch(uint32_t nowMs) {
 
 bool updateSystemBarTouch(uint32_t nowMs) {
   const auto bar = CydUi::systemBarRect();
+
+  if (childBadgeTapCount > 0 &&
+      nowMs - childBadgeFirstTapMs > CHILD_BADGE_TAP_WINDOW_MS) {
+    childBadgeTapCount = 0;
+  }
 
   if (openSystemControl != SystemControls::Control::None) {
     const auto state = systemControlProvider.state(openSystemControl);
@@ -467,6 +512,19 @@ bool updateSystemBarTouch(uint32_t nowMs) {
   }
 
   if (!touchEvent.tap) return false;
+  if (childTimeLabel.length() != 0 &&
+      CydUi::childModeBadgeRect().contains(touchEvent.point)) {
+    if (childBadgeTapCount == 0) childBadgeFirstTapMs = nowMs;
+    ++childBadgeTapCount;
+    if (childBadgeTapCount >= CHILD_BADGE_LOCK_TAPS) {
+      childBadgeTapCount = 0;
+      kidModeService.lockNow();
+    }
+    return true;
+  }
+
+  // Any other system-bar action abandons an incomplete lock gesture.
+  childBadgeTapCount = 0;
   const SystemControls::Control controls[] = {
       SystemControls::Control::Brightness,
       SystemControls::Control::Volume,
@@ -676,6 +734,233 @@ void exitActiveApp(uint32_t nowMs) {
   immersiveExitVisible = false;
 }
 
+void refreshChildTimeLabel(uint64_t nowUs) {
+  String next;
+  if (kidModeService.isUnlimited()) {
+    next = "Kid INF";
+  } else if (kidModeService.state() == KidMode::State::Timed) {
+    const uint32_t seconds = kidModeService.remainingSeconds(nowUs);
+    if (seconds < 60) {
+      next = "Kid <1m";
+    } else {
+      const uint32_t minutes = (seconds + 59U) / 60U;
+      if (minutes == 120) next = "Kid 2h";
+      else if (minutes == 60) next = "Kid 1h";
+      else next = String("Kid ") + String(minutes) + "m";
+    }
+  }
+  if (next != childTimeLabel) {
+    childTimeLabel = next;
+    systemBarDirty = true;
+  }
+}
+
+void beginChildShellScreen(ChildShellScreen screen, uint64_t nowUs) {
+  childShellScreen = screen;
+  childShellPin.clear();
+  childShellLockout.clear();
+  childShellCapture.reset();
+  childShellPrompt = "Parent PIN required";
+  childRenderedCountdown = UINT32_MAX;
+  childExpiredSleepAtUs =
+      screen == ChildShellScreen::Expired ? nowUs + 10ULL * 1000000ULL : 0;
+  childShellDirty = true;
+  menuTouchLockedUntilRelease = true;
+  closeSystemControl();
+  tft.fillScreen(TFT_BLACK);
+}
+
+void forceChildLock(bool expired, uint32_t nowMs, uint64_t nowUs) {
+  childBadgeTapCount = 0;
+  if (activeApp != nullptr) {
+    activeApp->exitToMenu();
+    exitActiveApp(nowMs);
+  }
+  autoLaunchNoticeActive = false;
+  pendingAutoLaunchTitle = "";
+  returnToCasinoAfterTongIts = false;
+  childTimeLabel = "";
+  systemBarDirty = true;
+  CydHardware::setRgb(0, 0, 0);
+  CydHardware::holdAudioIdle();
+  WiFi.disconnect(false, false);
+  WiFi.mode(WIFI_OFF);
+  beginChildShellScreen(expired ? ChildShellScreen::Expired
+                                : ChildShellScreen::Pin,
+                        nowUs);
+  if (expired) CydHardware::playNotificationBeep();
+}
+
+void drawChildShell(uint64_t nowUs) {
+  if (!childShellDirty) return;
+  childShellDirty = false;
+  CydFramebuffer::draw(tft, CydHardware::SCREEN_WIDTH,
+                       CydHardware::SCREEN_HEIGHT, [&](auto& canvas) {
+    if (childShellScreen == ChildShellScreen::Pin) {
+      if (childShellLockout.active(nowUs)) {
+        CydKidModeUi::drawLockout(
+            canvas, childShellLockout.remainingSeconds(nowUs), true);
+      } else {
+        CydKidModeUi::drawPin(canvas, "Child Mode", childShellPrompt.c_str(),
+                              childShellPin, "Unlock",
+                              childShellCapture.activeId(), true);
+      }
+    } else if (childShellScreen == ChildShellScreen::Duration) {
+      CydKidModeUi::drawDurations(canvas, childShellCapture.activeId(), true);
+    } else if (childShellScreen == ChildShellScreen::Expired) {
+      const uint32_t remaining = nowUs >= childExpiredSleepAtUs
+                                     ? 0
+                                     : static_cast<uint32_t>(
+                                           (childExpiredSleepAtUs - nowUs +
+                                            999999ULL) /
+                                           1000000ULL);
+      CydKidModeUi::drawExpired(
+          canvas, remaining,
+          childShellCapture.activeId() == 1);
+    }
+  });
+}
+
+void completeChildUnlock(uint32_t nowMs, uint64_t nowUs) {
+  // The expired-session fallback dims the PWM without changing the saved
+  // preference. Restore that persisted level before returning to normal UI.
+  systemControlProvider.restoreBrightness();
+  childShellScreen = ChildShellScreen::None;
+  childShellPin.clear();
+  childShellLockout.clear();
+  childShellCapture.reset();
+  childShellDirty = false;
+  childRenderedCountdown = UINT32_MAX;
+  childExpiredSleepAtUs = 0;
+  currentMenu = MenuView::Root;
+  menuPage = 0;
+  menuDirty = true;
+  menuTouchLockedUntilRelease = true;
+  CydHardware::applyDisplayOrientation(tft);
+  tft.fillScreen(TFT_BLACK);
+  touchTracker.reset(touchSample, nowMs);
+  refreshChildTimeLabel(nowUs);
+  systemBarDirty = true;
+}
+
+void handleChildPinAction(int16_t id, uint64_t nowUs) {
+  if (id >= 0 && id <= 9) {
+    childShellPin.append(static_cast<uint8_t>(id));
+    return;
+  }
+  if (id == CydKidModeUi::PIN_BACKSPACE) {
+    childShellPin.backspace();
+    return;
+  }
+  if (id != CydKidModeUi::PIN_SUBMIT || !childShellPin.complete()) return;
+
+  if (kidModeStorage.verify(childShellPin.value())) {
+    childShellPin.clear();
+    childShellLockout.clear();
+    childShellCapture.reset();
+    childShellScreen = ChildShellScreen::Duration;
+    childShellDirty = true;
+    return;
+  }
+
+  childShellPin.clear();
+  childShellCapture.reset();
+  childShellLockout.fail(nowUs);
+  childRenderedCountdown = UINT32_MAX;
+  childShellDirty = true;
+  CydHardware::playNotificationBeep();
+}
+
+bool updateChildShell(uint32_t nowMs, uint64_t nowUs) {
+  if (childShellScreen == ChildShellScreen::None) return false;
+
+  if (childShellScreen == ChildShellScreen::Pin) {
+    const uint32_t seconds = childShellLockout.remainingSeconds(nowUs);
+    if (seconds != childRenderedCountdown) {
+      childRenderedCountdown = seconds;
+      childShellDirty = true;
+    }
+  } else if (childShellScreen == ChildShellScreen::Expired) {
+    const uint32_t seconds = nowUs >= childExpiredSleepAtUs
+                                 ? 0
+                                 : static_cast<uint32_t>(
+                                       (childExpiredSleepAtUs - nowUs +
+                                        999999ULL) /
+                                       1000000ULL);
+    if (seconds != childRenderedCountdown) {
+      childRenderedCountdown = seconds;
+      childShellDirty = true;
+    }
+    if (nowUs >= childExpiredSleepAtUs && !touchSample.down) {
+      drawChildShell(nowUs);
+      if (!CydHardware::enterChildLockDeepSleep()) {
+        childShellPrompt = "Sleep unavailable - parent PIN required";
+        childShellScreen = ChildShellScreen::Pin;
+        childShellCapture.reset();
+        childShellDirty = true;
+      }
+    }
+  }
+
+  const TouchUi::Point point = TouchUi::currentPoint(touchSample, touchEvent);
+  int16_t hit = TouchUi::NO_CONTROL;
+  if (childShellScreen == ChildShellScreen::Pin &&
+      !childShellLockout.active(nowUs)) {
+    hit = CydKidModeUi::pinHit(point);
+  } else if (childShellScreen == ChildShellScreen::Duration) {
+    hit = CydKidModeUi::durationHit(point);
+  } else if (childShellScreen == ChildShellScreen::Expired &&
+             CydKidModeUi::EXPIRED_UNLOCK.contains(point)) {
+    hit = 1;
+  }
+
+  const auto result = childShellCapture.update(touchSample, touchEvent, hit);
+  if (result.pressed || result.released) childShellDirty = true;
+  if (result.activated) {
+    if (childShellScreen == ChildShellScreen::Pin) {
+      handleChildPinAction(result.id, nowUs);
+    } else if (childShellScreen == ChildShellScreen::Duration) {
+      constexpr uint16_t MINUTES[] = {10, 20, 30, 60, 120};
+      const bool unlocked = result.id == 5
+                                ? kidModeService.unlockUnlimited()
+                                : (result.id >= 0 && result.id < 5 &&
+                                   kidModeService.unlockForMinutes(
+                                       MINUTES[result.id], nowUs));
+      if (unlocked) completeChildUnlock(nowMs, nowUs);
+    } else if (childShellScreen == ChildShellScreen::Expired) {
+      childShellScreen = ChildShellScreen::Pin;
+      childShellPrompt = "Parent PIN required";
+      childShellCapture.reset();
+      childShellDirty = true;
+    }
+  }
+
+  drawChildShell(nowUs);
+  return true;
+}
+
+bool enforceChildMode(uint32_t nowMs, uint64_t nowUs) {
+  const KidMode::TickEvent event = kidModeService.tick(nowUs);
+  if (event == KidMode::TickEvent::RemainingChanged) {
+    refreshChildTimeLabel(nowUs);
+  } else if (event == KidMode::TickEvent::Expired) {
+    forceChildLock(true, nowMs, nowUs);
+  }
+
+  if (kidModeService.isUnlocked()) {
+    if (childTimeLabel.length() == 0) refreshChildTimeLabel(nowUs);
+  } else if (!kidModeService.enabled() && childTimeLabel.length() != 0) {
+    childTimeLabel = "";
+    systemBarDirty = true;
+  }
+
+  if (kidModeService.isLocked() &&
+      childShellScreen == ChildShellScreen::None) {
+    forceChildLock(false, nowMs, nowUs);
+  }
+  return updateChildShell(nowMs, nowUs);
+}
+
 void renderActiveAppIfDue(uint32_t nowMs) {
   const AppPhase phase = activeApp->phase();
   const bool immersive = activeApp->prefersImmersiveMode();
@@ -717,6 +1002,15 @@ void drawBootSplash() {
   drawCentered("CYD", 126, 3, TFT_CYAN);
   drawCentered(String("MicriOS ") + BuildInfo::BUILD_TEXT, 176, 1,
                TFT_LIGHTGREY);
+}
+
+void beginCustomBootSplash(uint32_t nowMs) {
+  customBootSplashActive = true;
+  customBootSplashStartedAtMs = nowMs;
+  bootReleasePending = touchSample.down;
+  touchTracker.reset(touchSample, nowMs);
+  CydKidModeUi::drawCustomSplash(tft, bootChildSplashSettings,
+                                 CydHardware::SCREEN_HEIGHT, true);
 }
 
 void drawAutoLaunchNotice() {
@@ -858,6 +1152,9 @@ void setup() {
   Serial.println("[cyd] setup start");
   CydHardware::begin();
   systemControlProvider.begin();
+  const KidMode::Storage::Config kidConfig = kidModeStorage.load();
+  kidModeService.begin(kidConfig.enabled);
+  bootChildSplashSettings = kidModeStorage.loadSplash();
   tft.init();
   CydHardware::applyDisplayOrientation(tft);
   tft.invertDisplay(true);
@@ -879,6 +1176,7 @@ void setup() {
 
 void loop() {
   const uint32_t nowMs = millis();
+  const uint64_t nowUs = static_cast<uint64_t>(esp_timer_get_time());
   pollSerial();
   touchSample = CydHardware::readTouch();
   touchEvent = touchTracker.update(touchSample, nowMs);
@@ -887,9 +1185,35 @@ void loop() {
     if (touchEvent.pressed || CydHardware::physicalB1Down() ||
         CydHardware::physicalB2Down() || nowMs - bootStartedAtMs >= BOOT_SPLASH_MS) {
       bootSplashActive = false;
+      if (kidModeService.enabled() && bootChildSplashSettings.enabled) {
+        beginCustomBootSplash(nowMs);
+      } else {
+        bootReleasePending = touchSample.down;
+        menuDirty = true;
+        tft.fillScreen(TFT_BLACK);
+      }
+    }
+    delay(4);
+    return;
+  }
+
+
+  if (customBootSplashActive) {
+    if (bootReleasePending) {
+      if (!touchSample.down) {
+        bootReleasePending = false;
+        touchTracker.reset(touchSample, nowMs);
+      }
+      delay(4);
+      return;
+    }
+    if (touchEvent.pressed ||
+        nowMs - customBootSplashStartedAtMs >= CUSTOM_BOOT_SPLASH_MS) {
+      customBootSplashActive = false;
       bootReleasePending = touchSample.down;
       menuDirty = true;
       tft.fillScreen(TFT_BLACK);
+      touchTracker.reset(touchSample, nowMs);
     }
     delay(4);
     return;
@@ -897,6 +1221,11 @@ void loop() {
 
   if (bootReleasePending) {
     if (!touchSample.down) bootReleasePending = false;
+    delay(4);
+    return;
+  }
+
+  if (enforceChildMode(nowMs, nowUs)) {
     delay(4);
     return;
   }
@@ -932,7 +1261,7 @@ void loop() {
       !systemBarConsumed && activeApp->handleTouch(touchSample, touchEvent);
   const bool gameplayTouchEnabled = activeApp->phase() == AppPhase::Running;
   const TouchUi::TouchSample appTouchSample =
-      (directTouchConsumed || !gameplayTouchEnabled)
+      (systemBarConsumed || directTouchConsumed || !gameplayTouchEnabled)
           ? TouchUi::TouchSample{}
           : touchSample;
 

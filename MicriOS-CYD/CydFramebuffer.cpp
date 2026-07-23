@@ -29,6 +29,11 @@ TFT_eSprite* acquire(TFT_eSPI& tft, int16_t width, int16_t height, uint8_t color
     if (frame == nullptr) {
       return nullptr;
     }
+    // TFT_eSprite's constructor in TFT_eSPI 2.5.43 does not initialize the
+    // inherited GFX-font pointer for heap-created sprites. Fresh ESP32 heap is
+    // filled with 0xA5, so the first textWidth() can dereference 0xA5A5A5A5.
+    // Selecting the built-in font explicitly clears that pointer.
+    frame->setTextFont(1);
   }
 
   if (frameWidth == width && frameHeight == height && frameDepth == colorDepth) {

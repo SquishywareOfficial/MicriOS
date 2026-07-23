@@ -3,7 +3,6 @@
 #include <Arduino.h>
 #include <TFT_eSPI.h>
 #include <WiFi.h>
-#include <esp_wifi.h>
 
 #include "../../CydFramebuffer.h"
 #include "../../CydUi.h"
@@ -17,8 +16,6 @@ constexpr const char* AP_PASS = "micrideck";
 constexpr const char* STA_HOSTNAME = "MicriDeck-Cyd";
 constexpr uint16_t PORTAL_LAUNCH_NOTICE_MS = 250;
 const IPAddress AP_IP(192, 168, 4, 1);
-const IPAddress AP_GATEWAY(192, 168, 4, 1);
-const IPAddress AP_SUBNET(255, 255, 255, 0);
 
 const char* const MAIN_ITEMS[] = {
     "Configure WiFi",
@@ -45,7 +42,9 @@ TouchUi::Rect profileRow(uint8_t row) {
 
 template <typename Drawer>
 void drawBuffered(TFT_eSPI& tft, uint32_t width, uint32_t height, Drawer drawer) {
-  CydFramebuffer::draw(tft, static_cast<int16_t>(width), static_cast<int16_t>(height), drawer);
+  tft.fillRect(0, 0, static_cast<int16_t>(width),
+               static_cast<int16_t>(height), TFT_BLACK);
+  drawer(tft);
 }
 }
 
@@ -184,6 +183,12 @@ void WiFiSetupApp::markDirty() {
 }
 
 void WiFiSetupApp::onAppReset() {
+  // WiFi Setup is state-driven rather than animated. Free the shared
+  // full-screen sprite so WPA/DHCP have enough contiguous heap on classic
+  // ESP32 CYD boards; each screen is drawn directly only when marked dirty.
+  CydFramebuffer::release();
+  if (portalRunning_) stopPortal();
+  if (testState_ != TestState::Idle) stopStationTest(true);
   mode_ = Mode::Main;
   mainIndex_ = 0;
   profileMenuIndex_ = 0;
@@ -194,8 +199,6 @@ void WiFiSetupApp::onAppReset() {
   testState_ = TestState::Idle;
   portalState_ = PortalState::Off;
   statusTimerMs_ = 0;
-  stopPortal();
-  stopStationTest(true);
   logic_.init();
   touchCapture_.reset();
   markDirty();
@@ -208,33 +211,23 @@ void WiFiSetupApp::onAppExit() {
 }
 
 void WiFiSetupApp::startPortal() {
-  stopPortal();
-  stopStationTest(false);
+  if (portalRunning_) stopPortal();
+  testingAll_ = false;
+  testProfileIndex_ = NO_PROFILE;
+  testState_ = TestState::Idle;
 
   portalState_ = PortalState::Starting;
   networkCount_ = 0;
   markDirty();
 
-  WiFi.persistent(false);
-  WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);
-  logic_.loadProfiles();
-  scanNetworks();
-
-  WiFi.disconnect(false, false);
-  WiFi.mode(WIFI_OFF);
-  delay(250);
   WiFi.mode(WIFI_AP);
-  WiFi.setSleep(false);
-  WiFi.setTxPower(WIFI_POWER_19_5dBm);
-
-  if (!WiFi.softAPConfig(AP_IP, AP_GATEWAY, AP_SUBNET) || !WiFi.softAP(AP_SSID, AP_PASS, AP_CHANNEL, false, 4)) {
+  if (!WiFi.softAP(AP_SSID, AP_PASS, AP_CHANNEL, false, 4)) {
     portalState_ = PortalState::Error;
     markDirty();
     return;
   }
-  esp_wifi_set_bandwidth(WIFI_IF_AP, WIFI_BW_HT20);
-  esp_wifi_set_protocol(WIFI_IF_AP, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
+
+  logic_.loadProfiles();
 
   setupRoutes();
   dns_.start(DNS_PORT, "*", apIP_);

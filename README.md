@@ -11,6 +11,7 @@ Quick links:
 - [Documentation index](docs/README.md)
 - [Flashing guide](docs/flashing.md)
 - [ESP32-CYD touch build](docs/cyd.md)
+- [CYD Child Mode](docs/child-mode.md)
 - [Media Player guide](docs/media-player.md)
 - [Game guides](docs/games.md)
 - [Mouse Emulator (Mouse Jiggler) guide](docs/mouse-emulator.md)
@@ -119,6 +120,16 @@ CYD media:
   AVI video or uncompressed PCM WAV audio with direct touch controls and
   GPIO26 DAC audio. See the
   [Media Player guide](docs/media-player.md).
+
+CYD parental controls:
+
+- **Child Mode** can require a six-digit parent PIN at every boot and unlock
+  the device for 10, 20, 30, 60, or 120 minutes, or until the next reboot.
+  Timed sessions count all app, game, media, and setup time. Triple-tap the
+  amber `Kid` timer in the system bar to lock immediately. A CYD-only custom
+  splash can show a personalized title and color palette before parental unlock.
+  See the
+  [Child Mode guide](docs/child-mode.md).
 
 Device settings and save data can be managed from **Options / Save Manager**. Save Manager can clear individual app data such as scores, contacts, WiFi profiles, miner settings, miner lifetime stats, and cluster pairing data.
 
