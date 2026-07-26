@@ -64,6 +64,10 @@ void ClockApp::onAppReset() {
   stopWifi();
 }
 
+void ClockApp::onAppExit() {
+  stopWifi();
+}
+
 bool ClockApp::timeIsValid() const {
   return time(nullptr) >= VALID_TIME_THRESHOLD;
 }
@@ -150,7 +154,8 @@ bool ClockApp::beginNextProfile(uint8_t startSlot) {
 }
 
 void ClockApp::beginSync() {
-  configTime(0, 0, "pool.ntp.org", "time.nist.gov", "time.google.com");
+  configTime(static_cast<long>(clock_.offsetMinutes()) * 60L, 0,
+             "pool.ntp.org", "time.nist.gov", "time.google.com");
   mode_ = Mode::Syncing;
   modeStartedAtMs_ = millis();
   markDirty();
@@ -182,7 +187,11 @@ void ClockApp::updateRunning(uint32_t deltaMs, const ButtonInput& b1, const Butt
       return;
     }
     if ((nowMs - modeStartedAtMs_) >= SPLASH_MS) {
-      beginRetry();
+      if (hasUsableTime()) {
+        enterClock();
+      } else {
+        beginRetry();
+      }
     }
     return;
   }

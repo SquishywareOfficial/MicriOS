@@ -14,15 +14,18 @@ class CreditsApp : public App {
     void drawRunning(TFT_eSPI& tft) override;
     void drawStart(TFT_eSPI& tft) override;
     void drawEnd(TFT_eSPI& tft) override;
+    bool startsRunningImmediately() const override;
 
   private:
     enum class Mode {
       Select,
+      MicriDeck,
       License,
       Credits
     };
 
     void drawSelect(TFT_eSPI& tft);
+    void drawMicriDeck(TFT_eSPI& tft);
     void drawLicense(TFT_eSPI& tft);
     void drawCredits(TFT_eSPI& tft);
     void markDirty();

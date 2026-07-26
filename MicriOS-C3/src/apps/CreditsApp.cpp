@@ -5,7 +5,8 @@
 #include "../shared/Version.h"
 
 namespace {
-constexpr uint8_t ABOUT_ITEM_COUNT = 2;
+constexpr uint8_t ABOUT_ITEM_COUNT = 3;
+constexpr uint8_t MICRIDECK_PAGE_COUNT = 9;
 constexpr uint8_t LICENSE_PAGE_COUNT = 6;
 
 struct CreditPage {
@@ -15,8 +16,21 @@ struct CreditPage {
 };
 
 const char* const ABOUT_ITEMS[ABOUT_ITEM_COUNT] = {
+    "The MicriDeck",
     "License",
     "Credits",
+};
+
+const char* const MICRIDECK_PAGES[MICRIDECK_PAGE_COUNT][3] = {
+    {"Cheap ESP32s had", "little useful", "firmware ready."},
+    {"I wanted a tiny", "computer with", "tools and games."},
+    {"atomic14's C3", "games showed what", "was possible."},
+    {"Such a small,", "cheap device could", "do much more."},
+    {"So I built the", "experience I was", "looking for."},
+    {"MicriOS became", "an operating", "system of tools,"},
+    {"games, utilities,", "and more for", "ESP32 boards."},
+    {"It began on the", "tiny ESP32-C3.", ""},
+    {"Then came the", "T-Display + CYD.", ""},
 };
 
 const CreditPage CREDIT_PAGES[] = {
@@ -81,6 +95,10 @@ bool CreditsApp::hasCustomOverlay() const {
   return true;
 }
 
+bool CreditsApp::startsRunningImmediately() const {
+  return true;
+}
+
 void CreditsApp::onAppReset() {
   mode_ = Mode::Select;
   selection_ = 0;
@@ -94,7 +112,9 @@ void CreditsApp::updateRunning(uint32_t deltaMs, const ButtonInput& input) {
     if (input.click) {
       selection_ = (selection_ + 1) % ABOUT_ITEM_COUNT;
     } else if (input.longPress) {
-      mode_ = selection_ == 0 ? Mode::License : Mode::Credits;
+      mode_ = selection_ == 0
+                  ? Mode::MicriDeck
+                  : (selection_ == 1 ? Mode::License : Mode::Credits);
       page_ = 0;
     }
     return;
@@ -107,7 +127,10 @@ void CreditsApp::updateRunning(uint32_t deltaMs, const ButtonInput& input) {
 
   if (input.click) {
     page_++;
-    const uint8_t pageCount = mode_ == Mode::License ? LICENSE_PAGE_COUNT : CREDIT_PAGE_COUNT;
+    const uint8_t pageCount =
+        mode_ == Mode::MicriDeck
+            ? MICRIDECK_PAGE_COUNT
+            : (mode_ == Mode::License ? LICENSE_PAGE_COUNT : CREDIT_PAGE_COUNT);
     if (page_ >= pageCount) {
       mode_ = Mode::Select;
       page_ = 0;
@@ -117,6 +140,9 @@ void CreditsApp::updateRunning(uint32_t deltaMs, const ButtonInput& input) {
 
 void CreditsApp::drawRunning(U8G2& u8g2) {
   switch (mode_) {
+    case Mode::MicriDeck:
+      drawMicriDeck(u8g2);
+      break;
     case Mode::License:
       drawLicense(u8g2);
       break;
@@ -133,17 +159,27 @@ void CreditsApp::drawRunning(U8G2& u8g2) {
 void CreditsApp::drawSelect(U8G2& u8g2) {
   u8g2.drawFrame(0, 0, width + 2, height);
   u8g2.setFont(u8g2_font_4x6_tr);
-  u8g2.drawStr(3, 8, "About");
-  u8g2.setCursor(width - 14, 8);
-  u8g2.print(selection_ + 1);
-  u8g2.print("/");
-  u8g2.print(ABOUT_ITEM_COUNT);
+  u8g2.drawStr(3, 7, "About");
+  u8g2.drawStr(27, 7, BuildInfo::BUILD_TEXT);
 
   u8g2.setFont(u8g2_font_5x8_tr);
   u8g2.drawStr(3, 22, ABOUT_ITEMS[selection_]);
   u8g2.drawStr(3, 32, "Tap next");
   u8g2.setFont(u8g2_font_4x6_tr);
   u8g2.drawStr(3, 39, "Hold open");
+}
+
+void CreditsApp::drawMicriDeck(U8G2& u8g2) {
+  u8g2.drawFrame(0, 0, width + 2, height);
+  u8g2.setFont(u8g2_font_4x6_tr);
+  u8g2.drawStr(3, 7, "MicriDeck");
+  u8g2.setCursor(width - 14, 7);
+  u8g2.print(page_ + 1);
+  u8g2.print("/");
+  u8g2.print(MICRIDECK_PAGE_COUNT);
+  for (uint8_t line = 0; line < 3; ++line) {
+    u8g2.drawStr(3, 17 + line * 10, MICRIDECK_PAGES[page_][line]);
+  }
 }
 
 void CreditsApp::drawLicense(U8G2& u8g2) {

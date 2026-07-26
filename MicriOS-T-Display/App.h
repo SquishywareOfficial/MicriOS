@@ -59,6 +59,7 @@ class App {
 
         bool shouldExitToMenu() const;
         void clearExitRequest();
+        void exitForSystemAction();
         AppPhase phase() const;
         const char* appTitle() const;
         uint8_t startIntroPage() const;

@@ -7,7 +7,8 @@
 #include "../shared/Version.h"
 
 namespace {
-constexpr uint8_t ABOUT_ITEM_COUNT = 2;
+constexpr uint8_t ABOUT_ITEM_COUNT = 3;
+constexpr uint8_t MICRIDECK_PAGE_COUNT = 5;
 constexpr uint8_t LICENSE_PAGE_COUNT = 6;
 
 struct CreditPage {
@@ -17,8 +18,47 @@ struct CreditPage {
 };
 
 const char* const ABOUT_ITEMS[ABOUT_ITEM_COUNT] = {
+    "The MicriDeck",
     "License",
     "Credits",
+};
+
+const char* const MICRIDECK_PAGES[MICRIDECK_PAGE_COUNT][5] = {
+    {
+        "After buying cheap ESP32",
+        "devices, I was disappointed",
+        "by how little useful firmware",
+        "was ready to install.",
+        nullptr,
+    },
+    {
+        "I wanted a complete little",
+        "computer: utilities, games,",
+        "tools, and one interface",
+        "bringing them together.",
+        nullptr,
+    },
+    {
+        "Atomic14's simple C3 games",
+        "showed me what was possible",
+        "on such a tiny, inexpensive",
+        "device.",
+        nullptr,
+    },
+    {
+        "So I created the experience",
+        "I had been looking for:",
+        "an original operating system",
+        "named MicriOS.",
+        nullptr,
+    },
+    {
+        "The first Micri Deck used the",
+        "tiny ESP32-C3. MicriOS later",
+        "expanded to the T-Display",
+        "and the CYD.",
+        nullptr,
+    },
 };
 
 const CreditPage CREDIT_PAGES[] = {
@@ -129,6 +169,10 @@ bool CreditsApp::hasCustomOverlay() const {
   return true;
 }
 
+bool CreditsApp::startsRunningImmediately() const {
+  return true;
+}
+
 void CreditsApp::render(TFT_eSPI& tft) {
   const AppPhase currentPhase = phase();
   if (!phaseCached_ || currentPhase != renderedPhase_) {
@@ -171,7 +215,9 @@ void CreditsApp::updateRunning(uint32_t deltaMs, const ButtonInput& b1, const Bu
       selection_ = (selection_ + 1) % ABOUT_ITEM_COUNT;
       markDirty();
     } else if (b1.longPress) {
-      mode_ = selection_ == 0 ? Mode::License : Mode::Credits;
+      mode_ = selection_ == 0
+                  ? Mode::MicriDeck
+                  : (selection_ == 1 ? Mode::License : Mode::Credits);
       page_ = 0;
       markDirty();
     }
@@ -185,7 +231,10 @@ void CreditsApp::updateRunning(uint32_t deltaMs, const ButtonInput& b1, const Bu
 
   if (b1.click) {
     page_++;
-    const uint8_t pageCount = mode_ == Mode::License ? LICENSE_PAGE_COUNT : CREDIT_PAGE_COUNT;
+    const uint8_t pageCount =
+        mode_ == Mode::MicriDeck
+            ? MICRIDECK_PAGE_COUNT
+            : (mode_ == Mode::License ? LICENSE_PAGE_COUNT : CREDIT_PAGE_COUNT);
     if (page_ >= pageCount) {
       mode_ = Mode::Select;
       page_ = 0;
@@ -199,6 +248,9 @@ void CreditsApp::drawRunning(TFT_eSPI& tft) {
     return;
   }
   switch (mode_) {
+    case Mode::MicriDeck:
+      drawMicriDeck(tft);
+      break;
     case Mode::License:
       drawLicense(tft);
       break;
@@ -220,7 +272,25 @@ void CreditsApp::drawSelect(TFT_eSPI& tft) {
     TDisplayUi::menuFrame(canvas, "About", selection_, ABOUT_ITEM_COUNT, first,
                           [](uint8_t index) -> const char* { return ABOUT_ITEMS[index]; },
                           "B1 next/open  B2 back", textSize, TFT_GREEN);
+    const String version = String("MicriOS ") + BuildInfo::BUILD_TEXT;
+    canvas.setTextSize(1);
+    canvas.setTextColor(TFT_CYAN, TFT_BLACK);
+    canvas.drawString(version, 12, 26);
   });
+}
+
+void CreditsApp::drawMicriDeck(TFT_eSPI& tft) {
+  drawShell(tft, width, height, "The MicriDeck", page_,
+            MICRIDECK_PAGE_COUNT);
+  for (uint8_t line = 0; line < 5; ++line) {
+    const char* text = MICRIDECK_PAGES[page_][line];
+    if (text == nullptr) {
+      break;
+    }
+    drawBodyLine(tft, 18, 45 + line * 14, text,
+                 line == 0 ? TFT_CYAN : TFT_WHITE);
+  }
+  drawFooter(tft, width, height, "B1 next page  B2 back");
 }
 
 void CreditsApp::drawLicense(TFT_eSPI& tft) {

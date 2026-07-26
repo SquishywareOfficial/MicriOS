@@ -57,6 +57,7 @@ class ClockLogic {
       showDate_ = prefs_.getBool("date", false);
       use24Hour_ = prefs_.getBool("24h", true);
       showOffset_ = prefs_.getBool("offset", true);
+      bootSyncEnabled_ = prefs_.getBool("bootsync", true);
       const int16_t legacyOffset = prefs_.getShort("tz", 0);
       const uint8_t savedCount = prefs_.getUChar("zcount", 0);
       const uint8_t savedActive = prefs_.getUChar("active", 0);
@@ -82,6 +83,7 @@ class ClockLogic {
       prefs_.putBool("date", showDate_);
       prefs_.putBool("24h", use24Hour_);
       prefs_.putBool("offset", showOffset_);
+      prefs_.putBool("bootsync", bootSyncEnabled_);
       prefs_.putShort("tz", offsetMinutes());
       prefs_.putUChar("zcount", savedZoneCount_);
       prefs_.putUChar("active", activeZoneSlot_);
@@ -97,6 +99,11 @@ class ClockLogic {
     bool showDate() const { return showDate_; }
     bool use24Hour() const { return use24Hour_; }
     bool showOffset() const { return showOffset_; }
+    bool bootSyncEnabled() const { return bootSyncEnabled_; }
+    void setBootSyncEnabled(bool enabled) {
+      bootSyncEnabled_ = enabled;
+      saveSettings();
+    }
     uint8_t zoneIndex() const { return savedZoneIndices_[activeZoneSlot_]; }
     uint8_t pickerZoneIndex() const { return pickerZoneIndex_; }
     uint8_t savedZoneCount() const { return savedZoneCount_; }
@@ -395,4 +402,5 @@ class ClockLogic {
     bool showDate_ = false;
     bool use24Hour_ = true;
     bool showOffset_ = true;
+    bool bootSyncEnabled_ = true;
 };
