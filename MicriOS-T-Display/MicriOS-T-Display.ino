@@ -119,7 +119,8 @@ enum class MenuView {
   Root,
   Games,
   Apps,
-  Settings
+  Settings,
+  Sleep
 };
 
 enum class MenuAction {
@@ -132,7 +133,9 @@ enum class MenuAction {
   OpenPowerSettings,
   OpenBrightness,
   ToggleBootTimeSync,
-  Sleep,
+  OpenSleep,
+  ScreenOff,
+  DeepSleep,
   Launch,
   Back
 };
@@ -148,7 +151,7 @@ MenuEntry rootMenu[] = {
     {"Apps", MenuAction::OpenApps, nullptr},
     {"Settings", MenuAction::OpenSettings, nullptr},
     {nullptr, MenuAction::Launch, &creditsApp},
-    {"Sleep Device", MenuAction::Sleep, nullptr},
+    {"Sleep Device", MenuAction::OpenSleep, nullptr},
 };
 
 char bootTimeSyncLabel[20] = "Boot Time: YES";
@@ -208,6 +211,12 @@ MenuEntry settingsMenu[] = {
     {"Back", MenuAction::Back, nullptr},
 };
 
+MenuEntry sleepMenu[] = {
+    {"Screen Off", MenuAction::ScreenOff, nullptr},
+    {"Deep Sleep", MenuAction::DeepSleep, nullptr},
+    {"Back", MenuAction::Back, nullptr},
+};
+
 App* autoLaunchChoices[] = {
     &alienRaidersGame,
     &breakout76Game,
@@ -251,6 +260,7 @@ constexpr uint8_t ROOT_MENU_COUNT = sizeof(rootMenu) / sizeof(rootMenu[0]);
 constexpr uint8_t GAMES_MENU_COUNT = sizeof(gamesMenu) / sizeof(gamesMenu[0]);
 constexpr uint8_t APPS_MENU_COUNT = sizeof(appsMenu) / sizeof(appsMenu[0]);
 constexpr uint8_t SETTINGS_MENU_COUNT = sizeof(settingsMenu) / sizeof(settingsMenu[0]);
+constexpr uint8_t SLEEP_MENU_COUNT = sizeof(sleepMenu) / sizeof(sleepMenu[0]);
 
 SingleButton menuButton1;
 SingleButton menuButton2;
@@ -268,6 +278,7 @@ uint8_t renderedMenuCount = 0;
 bool renderedMenuSelectArmed = false;
 TDisplayUi::TextSize renderedMenuTextSize = TDisplayUi::TextSize::Compact;
 bool menuInputLockedUntilRelease = false;
+bool screenStandbyActive = false;
 bool batteryInstalled = false;
 bool batteryWarningActive = false;
 bool batteryWarningPending = false;
@@ -292,6 +303,7 @@ String serialCommand;
 String pendingAutoLaunchTitle;
 
 void enterTDisplayDeepSleep();
+void enterTDisplayScreenStandby(uint32_t nowMs);
 
 bool isButton1Down() { return digitalRead(BUTTON_1) == LOW; }
 bool isButton2Down() { return digitalRead(BUTTON_2) == LOW; }
@@ -304,6 +316,8 @@ MenuEntry* currentMenuEntries() {
       return appsMenu;
     case MenuView::Settings:
       return settingsMenu;
+    case MenuView::Sleep:
+      return sleepMenu;
     case MenuView::Root:
     default:
       return rootMenu;
@@ -318,6 +332,8 @@ uint8_t currentMenuCount() {
       return APPS_MENU_COUNT;
     case MenuView::Settings:
       return SETTINGS_MENU_COUNT;
+    case MenuView::Sleep:
+      return SLEEP_MENU_COUNT;
     case MenuView::Root:
     default:
       return batteryInstalled ? ROOT_MENU_COUNT : ROOT_MENU_COUNT - 1;
@@ -332,6 +348,8 @@ const char* currentMenuTitle() {
       return "Apps";
     case MenuView::Settings:
       return "Settings";
+    case MenuView::Sleep:
+      return "Sleep Device";
     case MenuView::Root:
     default:
       return "MicriOS";
@@ -506,7 +524,15 @@ void selectMenuEntry(uint32_t nowMs) {
       invalidateMenuRender();
       markMenuDirty();
       break;
-    case MenuAction::Sleep:
+    case MenuAction::OpenSleep:
+      openMenu(MenuView::Sleep);
+      break;
+    case MenuAction::ScreenOff:
+      menuButton1.reset(false, nowMs);
+      menuButton2.reset(false, nowMs);
+      enterTDisplayScreenStandby(nowMs);
+      break;
+    case MenuAction::DeepSleep:
       bootTimeSyncService.suspend(nowMs);
       menuButton1.reset(false, nowMs);
       menuButton2.reset(false, nowMs);
@@ -898,6 +924,41 @@ void stopActiveAppForPowerEvent(uint32_t nowMs) {
   tft.setRotation(1);
 }
 
+void enterTDisplayScreenStandby(uint32_t nowMs) {
+  if (screenStandbyActive) {
+    return;
+  }
+
+  Serial.println("[power] entering screen standby; press either button to wake");
+  screenStandbyActive = true;
+  menuSelectArmed = false;
+  menuInputLockedUntilRelease = true;
+  menuButton1.reset(isButton1Down(), nowMs);
+  menuButton2.reset(isButton2Down(), nowMs);
+  TDisplayPower::enterScreenStandby(tft);
+}
+
+void exitTDisplayScreenStandby(uint32_t nowMs, bool b1, bool b2) {
+  if (!screenStandbyActive) {
+    return;
+  }
+
+  Serial.println("[power] leaving screen standby");
+  TDisplayPower::exitScreenStandby(tft);
+  screenStandbyActive = false;
+  menuSelectArmed = false;
+  menuInputLockedUntilRelease = true;
+  menuButton1.reset(b1, nowMs);
+  menuButton2.reset(b2, nowMs);
+  invalidateMenuRender();
+  markMenuDirty();
+  appRenderDue = activeApp != nullptr;
+  nextAppRenderMs = 0;
+  if (activeApp == nullptr) {
+    tft.setRotation(1);
+  }
+}
+
 void enterTDisplayDeepSleep() {
   Serial.println("[power] entering deep sleep; wake with RST");
 
@@ -927,6 +988,9 @@ void enterTDisplayDeepSleep() {
 
 void enterCriticalBatterySleep(uint16_t millivolts) {
   const uint32_t nowMs = millis();
+  if (screenStandbyActive) {
+    exitTDisplayScreenStandby(nowMs, isButton1Down(), isButton2Down());
+  }
   stopActiveAppForPowerEvent(nowMs);
   Serial.printf("[power] critical battery %u mV; forcing deep sleep\n", millivolts);
 
@@ -1206,10 +1270,33 @@ void loop() {
 
   pollBatterySafety(nowMs);
   if (batteryWarningPending && !batteryWarningActive) {
+    if (screenStandbyActive) {
+      exitTDisplayScreenStandby(nowMs, b1, b2);
+    }
     startLowBatteryWarning(nowMs);
   }
   if (batteryWarningActive) {
     updateLowBatteryWarning(nowMs, b1, b2);
+    delay(10);
+    return;
+  }
+
+  if (screenStandbyActive) {
+    bootTimeSyncService.update(nowMs, activeApp == nullptr);
+    if (b1 || b2) {
+      exitTDisplayScreenStandby(nowMs, b1, b2);
+      delay(10);
+      return;
+    }
+
+    // Apps continue advancing their logical state while rendering is paused.
+    // This keeps elapsed-time tools and future background services accurate.
+    if (activeApp != nullptr) {
+      activeApp->tick(nowMs, false, false);
+      if (activeApp->shouldExitToMenu()) {
+        exitActiveAppToMenu(nowMs, false, false);
+      }
+    }
     delay(10);
     return;
   }

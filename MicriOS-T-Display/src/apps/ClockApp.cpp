@@ -354,8 +354,8 @@ void ClockApp::drawNetworkStatus(Canvas& tft) {
 
   if (mode_ == Mode::Splash) {
     TDisplayUi::header(tft, "Micri Clock", TFT_CYAN);
-    drawCentered(tft, "Testing", 48, 3, TFT_WHITE);
-    drawCentered(tft, "saved WiFi", 82, 2, TFT_LIGHTGREY);
+    drawCentered(tft, "Checking", 48, 3, TFT_WHITE);
+    drawCentered(tft, "system time", 82, 2, TFT_LIGHTGREY);
     TDisplayUi::footer(tft, "B2 back");
     return;
   }

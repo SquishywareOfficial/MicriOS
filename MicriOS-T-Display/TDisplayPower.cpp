@@ -30,6 +30,7 @@ constexpr uint8_t BRIGHTNESS_DUTY[MAX_BRIGHTNESS_LEVEL] = {
     8, 14, 22, 34, 50, 72, 100, 136, 188, 255,
 };
 bool backlightPwmAttached = false;
+bool screenStandbyActive = false;
 bool batteryTrackerLoaded = false;
 BatterySessionLogic::Tracker batteryTracker;
 BatteryReading cachedBatteryReading;
@@ -159,6 +160,7 @@ void ensureBatteryTrackerLoaded() {
 }  // namespace
 
 void prepareAfterWake() {
+  screenStandbyActive = false;
   const esp_sleep_wakeup_cause_t wakeCause = esp_sleep_get_wakeup_cause();
   Serial.printf("[power] reset reason=%d wake cause=%d\n",
                 static_cast<int>(esp_reset_reason()),
@@ -305,6 +307,47 @@ void applyBrightnessLevel(uint8_t level) {
   if (backlightPwmAttached) {
     ledcWrite(BACKLIGHT_PIN, BRIGHTNESS_DUTY[level - 1]);
   }
+}
+
+void enterScreenStandby(TFT_eSPI& tft) {
+  if (screenStandbyActive) {
+    return;
+  }
+
+  if (!backlightPwmAttached) {
+    backlightPwmAttached =
+        ledcAttach(BACKLIGHT_PIN, BACKLIGHT_PWM_FREQUENCY, BACKLIGHT_PWM_RESOLUTION);
+  }
+  if (backlightPwmAttached) {
+    ledcWrite(BACKLIGHT_PIN, 0);
+  } else {
+    pinMode(BACKLIGHT_PIN, OUTPUT);
+    digitalWrite(BACKLIGHT_PIN, LOW);
+  }
+
+  tft.writecommand(TFT_DISPOFF);
+  delay(20);
+  tft.writecommand(TFT_SLPIN);
+  delay(120);
+  screenStandbyActive = true;
+}
+
+void exitScreenStandby(TFT_eSPI& tft) {
+  if (!screenStandbyActive) {
+    return;
+  }
+
+  tft.writecommand(TFT_SLPOUT);
+  delay(120);
+  tft.writecommand(TFT_DISPON);
+  delay(20);
+  tft.fillScreen(TFT_BLACK);
+  screenStandbyActive = false;
+  applyBrightnessLevel(loadBrightnessLevel());
+}
+
+bool isScreenStandbyActive() {
+  return screenStandbyActive;
 }
 
 [[noreturn]] void enterDeepSleep(

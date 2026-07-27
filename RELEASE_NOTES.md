@@ -20,10 +20,11 @@
 - Added low-battery warnings plus boot-time and runtime critical-voltage checks
   that cleanly stop active apps, shut down radios, blank the display, and force
   deep sleep before the LiPo is over-discharged.
-- Added a direct **Sleep Device** root-menu action for battery-equipped
-  T-Displays. It shows a short sleeping notice, waits for button release, and
-  enters deep sleep without a redundant confirmation; RST/EN remains the
-  reliable wake mechanism for this board revision.
+- Added a **Sleep Device** menu for battery-equipped T-Displays with reversible
+  **Screen Off** standby and full **Deep Sleep**. Screen standby stops the
+  panel and backlight while timers, apps, WiFi, Bluetooth, and ESP-NOW remain
+  alive; either button wakes the display without leaking input. Deep sleep
+  still shows a short notice and uses RST/EN as the reliable wake mechanism.
 - Added app lifecycle cleanup for system-triggered exits so deep sleep and
   critical-battery shutdown can release active WiFi, BLE, ESP-NOW, miner, and
   display resources safely.
@@ -33,6 +34,9 @@
 - Added default-on **Boot Time Sync** for T-Display. It tries saved WiFi
   profiles without blocking the shell, uses Micri Clock's selected UTC offset,
   and turns WiFi off immediately after NTP succeeds.
+- Changed Micri Clock's initial status to **Checking system time** so it no
+  longer claims to be testing WiFi when boot sync has already supplied a valid
+  clock.
 - Updated Micri Clock to reuse an already-valid boot-synchronised system clock,
   retain manual **Sync Now**, apply the configured UTC offset to NTP setup, and
   always release WiFi when leaving the app.

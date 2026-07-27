@@ -49,6 +49,12 @@ uint8_t loadBrightnessLevel();
 void saveBrightnessLevel(uint8_t level);
 void applyBrightnessLevel(uint8_t level);
 
+// Reversible display-only standby. CPU state, timers, apps, WiFi, Bluetooth,
+// and ESP-NOW remain untouched. The shell owns input consumption and redraw.
+void enterScreenStandby(TFT_eSPI& tft);
+void exitScreenStandby(TFT_eSPI& tft);
+bool isScreenStandbyActive();
+
 // Powers down radios and the display. RST/EN is the reliable wake mechanism:
 // B2/GPIO35 has no pull-up on the classic T-Display and floats in deep sleep.
 [[noreturn]] void enterDeepSleep(

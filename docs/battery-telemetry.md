@@ -53,7 +53,7 @@ is still recognizable.
 A session is finalized immediately when:
 
 - USB power returns.
-- The user selects **Sleep Device**.
+- The user selects **Deep Sleep** from **Sleep Device**.
 - Critical low-battery protection enters deep sleep.
 - Battery support is disabled.
 
@@ -82,6 +82,24 @@ The UI adds `*` to affected duration and minimum-voltage values. Because
 checkpoints occur every 30 minutes, an interrupted duration can be short by up
 to 30 minutes. A later clean sleep does not remove that asterisk from a session
 that was interrupted earlier.
+
+## Screen Standby
+
+The T-Display **Sleep Device** menu also offers **Screen Off**. This is a
+reversible display-only standby:
+
+- GPIO4 backlight PWM is set to zero.
+- The ST7789 receives `DISPOFF` and `SLPIN`.
+- CPU state, RAM, timers, the active app, WiFi, Bluetooth, and ESP-NOW remain
+  untouched.
+- App logic may continue ticking, but rendering is paused.
+- Either button wakes the panel, restores saved brightness, consumes the wake
+  input, and requests a deterministic redraw.
+
+Screen standby does not finalize the battery session because the device remains
+running. The target-local `TDisplayPower::enterScreenStandby()` and
+`exitScreenStandby()` functions intentionally own only display hardware so a
+future inactivity timer or foreground app can reuse the same lifecycle.
 
 ## Uptime And Deep Sleep
 
