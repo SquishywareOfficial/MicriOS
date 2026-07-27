@@ -10,6 +10,7 @@ class ClockApp : public App {
 
   protected:
     void onAppReset() override;
+    void onAppExit() override;
     void updateRunning(uint32_t deltaMs, const ButtonInput& b1, const ButtonInput& b2) override;
     void drawRunning(TFT_eSPI& tft) override;
     bool startsRunningImmediately() const override;

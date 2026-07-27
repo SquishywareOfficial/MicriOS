@@ -14,6 +14,7 @@ Quick links:
 - [Mouse Emulator (Mouse Jiggler) guide](docs/mouse-emulator.md)
 - [Micri Miner guide](docs/micri-miner.md)
 - [Distributed Miner guide](docs/distributed-miner.md)
+- [Battery telemetry guide](docs/battery-telemetry.md)
 
 ## Getting Started
 
@@ -95,7 +96,15 @@ Radio and network utilities:
 - **Micri Miner** is a solo Stratum miner with wallet/pool setup. See the [Micri Miner guide](docs/micri-miner.md).
 - **Distributed Miner** lets one screened board coordinate nearby ESP-NOW mining slaves. The T-Display master supports a saved portrait dashboard for upright cluster use. See the [Distributed Miner guide](docs/distributed-miner.md).
 
-Device settings and save data can be managed from **Options / Save Manager**. Save Manager can clear individual app data such as scores, contacts, WiFi profiles, miner settings, miner lifetime stats, and cluster pairing data.
+Device settings and save data can be managed from **Settings / Save Manager**.
+On T-Display, **Boot Time Sync** is enabled by default. When saved WiFi is
+available, MicriOS performs a non-blocking NTP check after boot, applies Micri
+Clock's selected UTC offset, and turns WiFi off again. The setting can be
+disabled directly from **Settings**.
+On T-Display boards with **Battery Installed** enabled, Power Settings includes
+voltage, calibrated percentage, USB/battery source, current and previous
+battery-session runtime, and minimum observed voltage. See the
+[battery telemetry guide](docs/battery-telemetry.md).
 
 ## Building From Source
 

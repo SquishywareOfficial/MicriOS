@@ -143,6 +143,10 @@ void App::clearExitRequest() {
     exitToMenuRequested_ = false;
 }
 
+void App::exitForSystemAction() {
+    requestExitToMenu();
+}
+
 AppPhase App::phase() const {
     return phase_;
 }

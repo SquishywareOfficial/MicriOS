@@ -9,6 +9,7 @@ Focused docs for MicriOS setup, flashing, and larger app workflows.
 - [Mouse Emulator (Mouse Jiggler)](mouse-emulator.md)
 - [Micri Miner](micri-miner.md)
 - [Distributed Miner](distributed-miner.md)
+- [Battery telemetry and session tracking](battery-telemetry.md)
 
 ## Related Files
 

@@ -1,5 +1,54 @@
 # Release Notes
 
+## v3.0 b87
+
+- Added T-Display battery support as an explicit user setting, keeping
+  battery-only status, calibration, telemetry, and Sleep Device controls
+  hidden until **Battery Installed** is enabled.
+- Added T-Display battery-voltage sampling, piecewise LiPo percentage
+  estimation, USB-versus-battery source detection, and a user-calibrated
+  full-voltage reference without weakening fixed raw-voltage safety limits.
+- Added a native T-Display Power Settings flow for battery status, battery
+  runtime, minimum observed voltage, full-voltage calibration, and persistent
+  backlight brightness.
+- Added shared battery-session accounting with 30-minute checkpoints,
+  current/previous session duration, minimum voltage, clean shutdown reasons,
+  and interrupted-session markers after reset or unexpected power loss.
+- Added 30-second cached T-Display power sampling so percentage, source
+  detection, runtime telemetry, and safety checks reuse one measurement instead
+  of repeatedly enabling the battery divider.
+- Added low-battery warnings plus boot-time and runtime critical-voltage checks
+  that cleanly stop active apps, shut down radios, blank the display, and force
+  deep sleep before the LiPo is over-discharged.
+- Added a **Sleep Device** menu for battery-equipped T-Displays with reversible
+  **Screen Off** standby and full **Deep Sleep**. Screen standby stops the
+  panel and backlight while timers, apps, WiFi, Bluetooth, and ESP-NOW remain
+  alive; either button wakes the display without leaking input. Deep sleep
+  still shows a short notice and uses RST/EN as the reliable wake mechanism.
+- Added app lifecycle cleanup for system-triggered exits so deep sleep and
+  critical-battery shutdown can release active WiFi, BLE, ESP-NOW, miner, and
+  display resources safely.
+- Flattened the T-Display Settings menu so User Initials, Text Size, Save
+  Manager, Power Settings, Brightness, Autolaunch, and WiFi Setup are reached
+  directly without an unnecessary Options splash/submenu.
+- Added default-on **Boot Time Sync** for T-Display. It tries saved WiFi
+  profiles without blocking the shell, uses Micri Clock's selected UTC offset,
+  and turns WiFi off immediately after NTP succeeds.
+- Changed Micri Clock's initial status to **Checking system time** so it no
+  longer claims to be testing WiFi when boot sync has already supplied a valid
+  clock.
+- Updated Micri Clock to reuse an already-valid boot-synchronised system clock,
+  retain manual **Sync Now**, apply the configured UTC offset to NTP setup, and
+  always release WiFi when leaving the app.
+- Added local boot timestamp and monotonic uptime to Battery Runtime. A later
+  successful NTP sync can establish the boot timestamp retroactively, while
+  offline cold boots are reported honestly as unavailable.
+- Changed C3 and T-Display About into direct system menus without an app splash,
+  retained the MicriOS build number on the root page, and added a paged
+  **The MicriDeck** origin story above License and Credits.
+- Added battery telemetry documentation covering sampling, persistence,
+  interrupted sessions, deep sleep, and the reusable cross-target contract.
+
 ## v3.0 b86
 
 - Added dedicated `MicriOS-S3-Zero-Headless` Distributed Miner slave firmware

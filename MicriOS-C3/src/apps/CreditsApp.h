@@ -13,15 +13,18 @@ class CreditsApp : public App {
     void drawRunning(U8G2& u8g2) override;
     void drawStart(U8G2& u8g2) override;
     void drawEnd(U8G2& u8g2) override;
+    bool startsRunningImmediately() const override;
 
   private:
     enum class Mode {
       Select,
+      MicriDeck,
       License,
       Credits
     };
 
     void drawSelect(U8G2& u8g2);
+    void drawMicriDeck(U8G2& u8g2);
     void drawLicense(U8G2& u8g2);
     void drawCredits(U8G2& u8g2);
 

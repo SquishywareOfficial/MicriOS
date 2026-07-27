@@ -47,6 +47,8 @@
 
 #include "TDisplayUi.h"
 #include "TDisplayFramebuffer.h"
+#include "TDisplayPower.h"
+#include "BootTimeSyncService.h"
 #include "src/shared/Version.h"
 
 static NimBLEUUID nimbleUuidLinkAnchor(static_cast<uint16_t>(0x1812));
@@ -67,6 +69,9 @@ constexpr uint16_t BOOT_SPLASH_MS = 2000;
 constexpr uint16_t AUTO_LAUNCH_NOTICE_MS = 2000;
 constexpr uint16_t APP_RUNNING_RENDER_MS = 33;
 constexpr uint16_t APP_STATIC_RENDER_MS = 2000;
+constexpr uint32_t BATTERY_CHECK_INTERVAL_MS = 30000;
+constexpr uint8_t LOW_BATTERY_CONFIRMATIONS = 2;
+constexpr uint8_t CRITICAL_BATTERY_CONFIRMATIONS = 3;
 
 CounterApp counterApp(SCREEN_WIDTH, SCREEN_HEIGHT);
 MouseEmulatorApp mouseEmulatorApp(SCREEN_WIDTH, SCREEN_HEIGHT);
@@ -108,18 +113,29 @@ SimonGame simonGame(SCREEN_WIDTH, SCREEN_HEIGHT);
 TinyGolfGame tinyGolfGame(SCREEN_WIDTH, SCREEN_HEIGHT);
 TongItsGame tongItsGame(SCREEN_WIDTH, SCREEN_HEIGHT);
 TowerStackerGame towerStackerGame(SCREEN_WIDTH, SCREEN_HEIGHT);
+BootTimeSyncService bootTimeSyncService;
 
 enum class MenuView {
   Root,
   Games,
   Apps,
-  Settings
+  Settings,
+  Sleep
 };
 
 enum class MenuAction {
   OpenGames,
   OpenApps,
   OpenSettings,
+  OpenUserInitials,
+  OpenTextSize,
+  OpenSaveManager,
+  OpenPowerSettings,
+  OpenBrightness,
+  ToggleBootTimeSync,
+  OpenSleep,
+  ScreenOff,
+  DeepSleep,
   Launch,
   Back
 };
@@ -135,7 +151,10 @@ MenuEntry rootMenu[] = {
     {"Apps", MenuAction::OpenApps, nullptr},
     {"Settings", MenuAction::OpenSettings, nullptr},
     {nullptr, MenuAction::Launch, &creditsApp},
+    {"Sleep Device", MenuAction::OpenSleep, nullptr},
 };
+
+char bootTimeSyncLabel[20] = "Boot Time: YES";
 
 MenuEntry gamesMenu[] = {
     {nullptr, MenuAction::Launch, &alienRaidersGame},
@@ -181,9 +200,20 @@ MenuEntry appsMenu[] = {
 };
 
 MenuEntry settingsMenu[] = {
-    {nullptr, MenuAction::Launch, &optionsApp},
+    {"User Initials", MenuAction::OpenUserInitials, nullptr},
+    {"Text Size", MenuAction::OpenTextSize, nullptr},
+    {"Save Manager", MenuAction::OpenSaveManager, nullptr},
+    {"Power Settings", MenuAction::OpenPowerSettings, nullptr},
+    {"Brightness", MenuAction::OpenBrightness, nullptr},
+    {bootTimeSyncLabel, MenuAction::ToggleBootTimeSync, nullptr},
     {nullptr, MenuAction::Launch, &autoLaunchSettingsApp},
     {nullptr, MenuAction::Launch, &wifiSetupApp},
+    {"Back", MenuAction::Back, nullptr},
+};
+
+MenuEntry sleepMenu[] = {
+    {"Screen Off", MenuAction::ScreenOff, nullptr},
+    {"Deep Sleep", MenuAction::DeepSleep, nullptr},
     {"Back", MenuAction::Back, nullptr},
 };
 
@@ -230,6 +260,7 @@ constexpr uint8_t ROOT_MENU_COUNT = sizeof(rootMenu) / sizeof(rootMenu[0]);
 constexpr uint8_t GAMES_MENU_COUNT = sizeof(gamesMenu) / sizeof(gamesMenu[0]);
 constexpr uint8_t APPS_MENU_COUNT = sizeof(appsMenu) / sizeof(appsMenu[0]);
 constexpr uint8_t SETTINGS_MENU_COUNT = sizeof(settingsMenu) / sizeof(settingsMenu[0]);
+constexpr uint8_t SLEEP_MENU_COUNT = sizeof(sleepMenu) / sizeof(sleepMenu[0]);
 
 SingleButton menuButton1;
 SingleButton menuButton2;
@@ -247,6 +278,15 @@ uint8_t renderedMenuCount = 0;
 bool renderedMenuSelectArmed = false;
 TDisplayUi::TextSize renderedMenuTextSize = TDisplayUi::TextSize::Compact;
 bool menuInputLockedUntilRelease = false;
+bool screenStandbyActive = false;
+bool batteryInstalled = false;
+bool batteryWarningActive = false;
+bool batteryWarningPending = false;
+bool batteryWarningShown = false;
+uint8_t lowBatteryConfirmations = 0;
+uint8_t criticalBatteryConfirmations = 0;
+uint32_t nextBatteryCheckMs = 0;
+TDisplayPower::BatteryReading lastBatteryReading;
 bool bootSplashActive = true;
 bool bootSkipReleasePending = false;
 bool autoLaunchAttempted = false;
@@ -262,6 +302,9 @@ AppPhase lastRenderedAppPhase = AppPhase::Start;
 String serialCommand;
 String pendingAutoLaunchTitle;
 
+void enterTDisplayDeepSleep();
+void enterTDisplayScreenStandby(uint32_t nowMs);
+
 bool isButton1Down() { return digitalRead(BUTTON_1) == LOW; }
 bool isButton2Down() { return digitalRead(BUTTON_2) == LOW; }
 
@@ -273,6 +316,8 @@ MenuEntry* currentMenuEntries() {
       return appsMenu;
     case MenuView::Settings:
       return settingsMenu;
+    case MenuView::Sleep:
+      return sleepMenu;
     case MenuView::Root:
     default:
       return rootMenu;
@@ -287,9 +332,11 @@ uint8_t currentMenuCount() {
       return APPS_MENU_COUNT;
     case MenuView::Settings:
       return SETTINGS_MENU_COUNT;
+    case MenuView::Sleep:
+      return SLEEP_MENU_COUNT;
     case MenuView::Root:
     default:
-      return ROOT_MENU_COUNT;
+      return batteryInstalled ? ROOT_MENU_COUNT : ROOT_MENU_COUNT - 1;
   }
 }
 
@@ -301,6 +348,8 @@ const char* currentMenuTitle() {
       return "Apps";
     case MenuView::Settings:
       return "Settings";
+    case MenuView::Sleep:
+      return "Sleep Device";
     case MenuView::Root:
     default:
       return "MicriOS";
@@ -384,6 +433,11 @@ void markMenuDirty() {
   menuDirty = true;
 }
 
+void updateBootTimeSyncLabel() {
+  snprintf(bootTimeSyncLabel, sizeof(bootTimeSyncLabel), "Boot Time: %s",
+           bootTimeSyncService.enabled() ? "YES" : "NO");
+}
+
 void invalidateMenuRender() {
   menuRendered = false;
   renderedMenuIndex = 255;
@@ -400,6 +454,7 @@ void openMenu(MenuView view) {
 }
 
 void launchApp(App& app, uint32_t nowMs, bool fromAutoLaunch = false, bool autoRun = false) {
+  bootTimeSyncService.suspend(nowMs);
   invalidateMenuRender();
   activeReturnMenu = currentMenu;
   activeApp = &app;
@@ -442,6 +497,46 @@ void selectMenuEntry(uint32_t nowMs) {
       break;
     case MenuAction::OpenSettings:
       openMenu(MenuView::Settings);
+      break;
+    case MenuAction::OpenUserInitials:
+      optionsApp.setEntryPoint(OptionsApp::EntryPoint::Initials);
+      launchApp(optionsApp, nowMs);
+      break;
+    case MenuAction::OpenTextSize:
+      optionsApp.setEntryPoint(OptionsApp::EntryPoint::TextSize);
+      launchApp(optionsApp, nowMs);
+      break;
+    case MenuAction::OpenSaveManager:
+      optionsApp.setEntryPoint(OptionsApp::EntryPoint::Saves);
+      launchApp(optionsApp, nowMs);
+      break;
+    case MenuAction::OpenPowerSettings:
+      optionsApp.setEntryPoint(OptionsApp::EntryPoint::Power);
+      launchApp(optionsApp, nowMs);
+      break;
+    case MenuAction::OpenBrightness:
+      optionsApp.setEntryPoint(OptionsApp::EntryPoint::Brightness);
+      launchApp(optionsApp, nowMs);
+      break;
+    case MenuAction::ToggleBootTimeSync:
+      bootTimeSyncService.setEnabled(!bootTimeSyncService.enabled(), nowMs);
+      updateBootTimeSyncLabel();
+      invalidateMenuRender();
+      markMenuDirty();
+      break;
+    case MenuAction::OpenSleep:
+      openMenu(MenuView::Sleep);
+      break;
+    case MenuAction::ScreenOff:
+      menuButton1.reset(false, nowMs);
+      menuButton2.reset(false, nowMs);
+      enterTDisplayScreenStandby(nowMs);
+      break;
+    case MenuAction::DeepSleep:
+      bootTimeSyncService.suspend(nowMs);
+      menuButton1.reset(false, nowMs);
+      menuButton2.reset(false, nowMs);
+      enterTDisplayDeepSleep();
       break;
     case MenuAction::Back:
       openMenu(MenuView::Root);
@@ -504,6 +599,14 @@ void updateMenu(uint32_t nowMs, bool b1, bool b2) {
 }
 
 void exitActiveAppToMenu(uint32_t nowMs, bool b1, bool b2) {
+  if (activeApp == &optionsApp) {
+    batteryInstalled = TDisplayPower::isBatteryInstalled();
+    lowBatteryConfirmations = 0;
+    criticalBatteryConfirmations = 0;
+    batteryWarningPending = false;
+    batteryWarningShown = false;
+    nextBatteryCheckMs = nowMs;
+  }
   activeApp->clearExitRequest();
   activeApp = nullptr;
   currentMenu = activeReturnMenu;
@@ -758,6 +861,11 @@ void handleSerialCommand(String command) {
     distributedMinerApp.debugSetLocalMining(false);
     return;
   }
+  if (command.equalsIgnoreCase("power sleep")) {
+    Serial.println("[debug] serial sleep requested");
+    enterTDisplayDeepSleep();
+    return;
+  }
 
   Serial.print("[debug] unknown command: ");
   Serial.println(command);
@@ -793,6 +901,251 @@ void drawBootSplash() {
   drawCenteredText("T-Display", 72, 2, TFT_CYAN);
   String versionLine = String("MicriOS ") + BuildInfo::BUILD_TEXT;
   drawCenteredText(versionLine.c_str(), 114, 1, TFT_LIGHTGREY);
+}
+
+void stopActiveAppForPowerEvent(uint32_t nowMs) {
+  if (activeApp != nullptr) {
+    activeApp->exitForSystemAction();
+    activeApp->clearExitRequest();
+    activeApp = nullptr;
+  }
+  autoLaunchNoticeActive = false;
+  pendingAutoLaunchTitle = "";
+  currentMenu = MenuView::Root;
+  activeReturnMenu = MenuView::Root;
+  menuIndex = 0;
+  scrollOffset = 0;
+  menuSelectArmed = false;
+  menuInputLockedUntilRelease = true;
+  menuButton1.reset(isButton1Down(), nowMs);
+  menuButton2.reset(isButton2Down(), nowMs);
+  invalidateMenuRender();
+  markMenuDirty();
+  tft.setRotation(1);
+}
+
+void enterTDisplayScreenStandby(uint32_t nowMs) {
+  if (screenStandbyActive) {
+    return;
+  }
+
+  Serial.println("[power] entering screen standby; press either button to wake");
+  screenStandbyActive = true;
+  menuSelectArmed = false;
+  menuInputLockedUntilRelease = true;
+  menuButton1.reset(isButton1Down(), nowMs);
+  menuButton2.reset(isButton2Down(), nowMs);
+  TDisplayPower::enterScreenStandby(tft);
+}
+
+void exitTDisplayScreenStandby(uint32_t nowMs, bool b1, bool b2) {
+  if (!screenStandbyActive) {
+    return;
+  }
+
+  Serial.println("[power] leaving screen standby");
+  TDisplayPower::exitScreenStandby(tft);
+  screenStandbyActive = false;
+  menuSelectArmed = false;
+  menuInputLockedUntilRelease = true;
+  menuButton1.reset(b1, nowMs);
+  menuButton2.reset(b2, nowMs);
+  invalidateMenuRender();
+  markMenuDirty();
+  appRenderDue = activeApp != nullptr;
+  nextAppRenderMs = 0;
+  if (activeApp == nullptr) {
+    tft.setRotation(1);
+  }
+}
+
+void enterTDisplayDeepSleep() {
+  Serial.println("[power] entering deep sleep; wake with RST");
+
+  tft.setRotation(1);
+  TDisplayFramebuffer::draw(tft, SCREEN_WIDTH, SCREEN_HEIGHT, [&](auto& canvas) {
+    canvas.fillScreen(TFT_BLACK);
+    canvas.drawRoundRect(5, 5, SCREEN_WIDTH - 10, SCREEN_HEIGHT - 10, 8, TFT_DARKGREY);
+    canvas.setTextDatum(TL_DATUM);
+    canvas.setTextSize(2);
+    canvas.setTextColor(TFT_CYAN, TFT_BLACK);
+    const char* heading = "Sleeping";
+    canvas.drawString(heading, (SCREEN_WIDTH - canvas.textWidth(heading)) / 2, 39);
+    canvas.setTextSize(1);
+    canvas.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    const char* wakeText = "Press RST to wake";
+    canvas.drawString(wakeText, (SCREEN_WIDTH - canvas.textWidth(wakeText)) / 2, 78);
+  });
+
+  // The menu-selection input must be released before the sleep transition.
+  while (isButton1Down() || isButton2Down()) {
+    delay(10);
+  }
+  delay(250);
+
+  TDisplayPower::enterDeepSleep(tft);
+}
+
+void enterCriticalBatterySleep(uint16_t millivolts) {
+  const uint32_t nowMs = millis();
+  if (screenStandbyActive) {
+    exitTDisplayScreenStandby(nowMs, isButton1Down(), isButton2Down());
+  }
+  stopActiveAppForPowerEvent(nowMs);
+  Serial.printf("[power] critical battery %u mV; forcing deep sleep\n", millivolts);
+
+  TDisplayFramebuffer::draw(tft, SCREEN_WIDTH, SCREEN_HEIGHT, [&](auto& canvas) {
+    canvas.fillScreen(TFT_BLACK);
+    canvas.drawRoundRect(5, 5, SCREEN_WIDTH - 10, SCREEN_HEIGHT - 10, 8, TFT_RED);
+    canvas.setTextDatum(TL_DATUM);
+    canvas.setTextSize(2);
+    canvas.setTextColor(TFT_RED, TFT_BLACK);
+    const char* heading = "BATTERY EMPTY";
+    canvas.drawString(heading, (SCREEN_WIDTH - canvas.textWidth(heading)) / 2, 27);
+    char voltage[18];
+    snprintf(voltage, sizeof(voltage), "%u.%02u V",
+             millivolts / 1000, (millivolts % 1000) / 10);
+    canvas.setTextColor(TFT_YELLOW, TFT_BLACK);
+    canvas.drawString(voltage, (SCREEN_WIDTH - canvas.textWidth(voltage)) / 2, 60);
+    canvas.setTextSize(1);
+    canvas.setTextColor(TFT_WHITE, TFT_BLACK);
+    const char* detail = "Connect USB before waking";
+    canvas.drawString(detail, (SCREEN_WIDTH - canvas.textWidth(detail)) / 2, 96);
+  });
+
+  while (isButton1Down() || isButton2Down()) {
+    delay(10);
+  }
+  delay(1200);
+  TDisplayPower::enterDeepSleep(
+      tft, BatterySessionLogic::EndReason::LowBattery);
+}
+
+void drawLowBatteryWarning() {
+  TDisplayFramebuffer::draw(tft, SCREEN_WIDTH, SCREEN_HEIGHT, [&](auto& canvas) {
+    canvas.fillScreen(TFT_BLACK);
+    canvas.drawRoundRect(5, 5, SCREEN_WIDTH - 10, SCREEN_HEIGHT - 10, 8, TFT_RED);
+    canvas.setTextDatum(TL_DATUM);
+    canvas.setTextSize(2);
+    canvas.setTextColor(TFT_YELLOW, TFT_BLACK);
+    const char* heading = "LOW BATTERY";
+    canvas.drawString(heading, (SCREEN_WIDTH - canvas.textWidth(heading)) / 2, 20);
+    char voltage[18];
+    snprintf(voltage, sizeof(voltage), "%u.%02u V  %u%%",
+             lastBatteryReading.millivolts / 1000,
+             (lastBatteryReading.millivolts % 1000) / 10,
+             lastBatteryReading.percent);
+    canvas.setTextColor(TFT_WHITE, TFT_BLACK);
+    canvas.drawString(voltage, (SCREEN_WIDTH - canvas.textWidth(voltage)) / 2, 52);
+    canvas.setTextSize(1);
+    canvas.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    const char* detail = "Charge soon. Auto-sleep at 3.35 V";
+    canvas.drawString(detail, (SCREEN_WIDTH - canvas.textWidth(detail)) / 2, 84);
+    const char* footer = "B1/B2 continue";
+    canvas.drawString(footer, (SCREEN_WIDTH - canvas.textWidth(footer)) / 2, 111);
+  });
+}
+
+void startLowBatteryWarning(uint32_t nowMs) {
+  stopActiveAppForPowerEvent(nowMs);
+  batteryWarningPending = false;
+  batteryWarningActive = true;
+  batteryWarningShown = true;
+  drawLowBatteryWarning();
+}
+
+void updateLowBatteryWarning(uint32_t nowMs, bool b1, bool b2) {
+  const ButtonInput input1 = menuButton1.update(b1, nowMs);
+  const ButtonInput input2 = menuButton2.update(b2, nowMs);
+  if (input1.click || input1.longPress || input2.click || input2.longPress) {
+    batteryWarningActive = false;
+    openMenu(MenuView::Root);
+    menuInputLockedUntilRelease = true;
+    menuButton1.reset(b1, nowMs);
+    menuButton2.reset(b2, nowMs);
+    tft.fillScreen(TFT_BLACK);
+  }
+}
+
+void evaluateRuntimeBatteryReading(const TDisplayPower::BatteryReading& reading) {
+  if (!reading.valid) {
+    Serial.println("[power] battery sample unavailable");
+    return;
+  }
+
+  lastBatteryReading = reading;
+  Serial.printf("[power] battery=%u mV estimate=%u%%\n",
+                reading.millivolts, reading.percent);
+
+  if (reading.millivolts <= TDisplayPower::CRITICAL_BATTERY_MV) {
+    if (criticalBatteryConfirmations < CRITICAL_BATTERY_CONFIRMATIONS) {
+      ++criticalBatteryConfirmations;
+    }
+  } else {
+    criticalBatteryConfirmations = 0;
+  }
+
+  if (reading.millivolts <= TDisplayPower::LOW_BATTERY_MV) {
+    if (lowBatteryConfirmations < LOW_BATTERY_CONFIRMATIONS) {
+      ++lowBatteryConfirmations;
+    }
+  } else if (reading.millivolts >= TDisplayPower::BATTERY_RECOVERY_MV) {
+    lowBatteryConfirmations = 0;
+    batteryWarningShown = false;
+    batteryWarningPending = false;
+  }
+
+  if (criticalBatteryConfirmations >= CRITICAL_BATTERY_CONFIRMATIONS) {
+    enterCriticalBatterySleep(reading.millivolts);
+  }
+  if (lowBatteryConfirmations >= LOW_BATTERY_CONFIRMATIONS && !batteryWarningShown) {
+    batteryWarningPending = true;
+  }
+}
+
+void runBootBatterySafetyCheck() {
+  if (!batteryInstalled) {
+    return;
+  }
+
+  uint8_t bootLowCount = 0;
+  uint8_t bootCriticalCount = 0;
+  for (uint8_t attempt = 0; attempt < CRITICAL_BATTERY_CONFIRMATIONS; ++attempt) {
+    const TDisplayPower::BatteryReading reading = TDisplayPower::readBattery();
+    if (!reading.valid) {
+      Serial.println("[power] boot battery sample unavailable");
+      break;
+    }
+
+    lastBatteryReading = reading;
+    Serial.printf("[power] boot battery=%u mV estimate=%u%% sample=%u\n",
+                  reading.millivolts, reading.percent, attempt + 1);
+    bootLowCount =
+        reading.millivolts <= TDisplayPower::LOW_BATTERY_MV ? bootLowCount + 1 : 0;
+    bootCriticalCount =
+        reading.millivolts <= TDisplayPower::CRITICAL_BATTERY_MV ? bootCriticalCount + 1 : 0;
+
+    if (bootCriticalCount >= CRITICAL_BATTERY_CONFIRMATIONS) {
+      enterCriticalBatterySleep(reading.millivolts);
+    }
+    if (attempt == 0 && bootLowCount == 0) {
+      break;
+    }
+    delay(120);
+  }
+
+  if (bootLowCount >= LOW_BATTERY_CONFIRMATIONS) {
+    lowBatteryConfirmations = LOW_BATTERY_CONFIRMATIONS;
+    batteryWarningPending = true;
+  }
+}
+
+void pollBatterySafety(uint32_t nowMs) {
+  if (!batteryInstalled || static_cast<int32_t>(nowMs - nextBatteryCheckMs) < 0) {
+    return;
+  }
+  nextBatteryCheckMs = nowMs + BATTERY_CHECK_INTERVAL_MS;
+  evaluateRuntimeBatteryReading(TDisplayPower::readBattery());
 }
 
 template <typename Canvas>
@@ -859,15 +1212,22 @@ void drawMenu() {
 
 void setup() {
   Serial.begin(115200);
+  TDisplayPower::prepareAfterWake();
   pinMode(BUTTON_1, INPUT_PULLUP);
   pinMode(BUTTON_2, INPUT_PULLUP);
 
   tft.init();
   tft.setRotation(1);
+  TDisplayPower::applyBrightnessLevel(TDisplayPower::loadBrightnessLevel());
   tft.fillScreen(TFT_BLACK);
   autoLaunchSettingsApp.setLaunchableApps(autoLaunchChoices, AUTO_LAUNCH_CHOICE_COUNT);
   AutoLaunchSettings::migrateLegacyDebugPrefs();
+  bootTimeSyncService.begin();
+  updateBootTimeSyncLabel();
+  batteryInstalled = TDisplayPower::isBatteryInstalled();
+  runBootBatterySafetyCheck();
   const uint32_t nowMs = millis();
+  nextBatteryCheckMs = nowMs + BATTERY_CHECK_INTERVAL_MS;
   bootStartedAtMs = nowMs;
   menuButton1.reset(isButton1Down(), nowMs);
   menuButton2.reset(isButton2Down(), nowMs);
@@ -908,6 +1268,39 @@ void loop() {
     return;
   }
 
+  pollBatterySafety(nowMs);
+  if (batteryWarningPending && !batteryWarningActive) {
+    if (screenStandbyActive) {
+      exitTDisplayScreenStandby(nowMs, b1, b2);
+    }
+    startLowBatteryWarning(nowMs);
+  }
+  if (batteryWarningActive) {
+    updateLowBatteryWarning(nowMs, b1, b2);
+    delay(10);
+    return;
+  }
+
+  if (screenStandbyActive) {
+    bootTimeSyncService.update(nowMs, activeApp == nullptr);
+    if (b1 || b2) {
+      exitTDisplayScreenStandby(nowMs, b1, b2);
+      delay(10);
+      return;
+    }
+
+    // Apps continue advancing their logical state while rendering is paused.
+    // This keeps elapsed-time tools and future background services accurate.
+    if (activeApp != nullptr) {
+      activeApp->tick(nowMs, false, false);
+      if (activeApp->shouldExitToMenu()) {
+        exitActiveAppToMenu(nowMs, false, false);
+      }
+    }
+    delay(10);
+    return;
+  }
+
   if (!autoLaunchAttempted && activeApp == nullptr) {
     if (beginAutoLaunchNotice(nowMs)) {
       delay(10);
@@ -920,6 +1313,8 @@ void loop() {
     delay(10);
     return;
   }
+
+  bootTimeSyncService.update(nowMs, activeApp == nullptr);
 
   if (activeApp == nullptr) {
     updateMenu(nowMs, b1, b2);
