@@ -273,14 +273,38 @@ jobs:
             build_text="${GITHUB_REF_NAME}"
           fi
 
+          release_section="$(
+            awk -v heading="## ${build_text}" '
+              $0 == heading {
+                capture = 1
+                next
+              }
+              capture && /^## / {
+                exit
+              }
+              capture {
+                print
+              }
+            ' RELEASE_NOTES.md
+          )"
+
           for artifact_dir in release-artifacts/*-firmware; do
             artifact_name="$(basename "$artifact_dir")"
             zip_path="$PWD/release-dist/${artifact_name}-${GITHUB_REF_NAME}.zip"
             (cd "$artifact_dir" && python3 -m zipfile -c "$zip_path" .)
           done
 
-          cat > release-dist/release-notes.md <<EOF
-          MicriOS ${build_text} firmware build.
+          if [[ -n "$release_section" ]]; then
+            printf '%s\n\n' "$release_section" > release-dist/release-notes.md
+          else
+            printf 'MicriOS %s firmware build.\n\n' "$build_text" > release-dist/release-notes.md
+            printf '_No matching section was found in `RELEASE_NOTES.md`._\n\n' >> release-dist/release-notes.md
+          fi
+
+          cat >> release-dist/release-notes.md <<EOF
+          ---
+
+          ### Firmware packages
 
           Includes firmware packages for:
           - MicriOS for C3
