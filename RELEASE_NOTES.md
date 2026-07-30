@@ -8,6 +8,9 @@ New releases should group changes by target or ownership area:
 ### T-Display
 - Target-specific changes.
 
+### T-Deck
+- Target-specific changes.
+
 ### C3
 - Target-specific changes.
 
