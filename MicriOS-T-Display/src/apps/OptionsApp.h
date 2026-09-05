@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../App.h"
+#include "../../TDisplayIdleSettings.h"
 #include "../../TDisplayUi.h"
 #include "../../TDisplayPower.h"
 #include "../shared/logic/ClockLogic.h"
@@ -44,6 +45,10 @@ class OptionsApp : public App {
       Battery,
       BatteryRuntime,
       FullVoltage,
+      IdleDisplay,
+      SaverTimeout,
+      DimTimeout,
+      ScreenOffTimeout,
       Brightness,
       Message
     };
@@ -60,6 +65,7 @@ class OptionsApp : public App {
     uint8_t selected_ = 0;
     uint8_t mainIndex_ = 0;
     uint8_t powerIndex_ = 0;
+    uint8_t idleDisplayIndex_ = 0;
     uint8_t saveIndex_ = 0;
     TDisplayUi::TextSize textSize_ = TDisplayUi::TextSize::Compact;
     const char* message_ = "";
@@ -69,6 +75,8 @@ class OptionsApp : public App {
     bool directEntry_ = false;
     bool batteryInstalled_ = false;
     TDisplayPower::BatteryReading batteryReading_;
+    TDisplayIdleSettings::Config idleDisplayConfig_;
+    uint16_t editedTimeoutMinutes_ = 0;
     ClockLogic clockSettings_;
     uint8_t brightnessLevel_ = 8;
     uint32_t telemetryRefreshMs_ = 0;

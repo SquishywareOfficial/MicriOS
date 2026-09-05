@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../App.h"
+#include "../shared/logic/ClockLogic.h"
 
 class ScreenSaverApp : public App {
  public:
@@ -8,6 +9,9 @@ class ScreenSaverApp : public App {
 
   uint16_t runningRenderIntervalMs() const override;
   bool hasCustomOverlay() const override;
+  void prepareAutomaticLaunch();
+  bool isPlaying() const;
+  bool shouldReturnToRoot() const;
 
  protected:
   void onAppReset() override;
@@ -39,6 +43,7 @@ class ScreenSaverApp : public App {
     Spirograph,
     Sandstorm,
     NightDrive,
+    Clock,
     Count
   };
 
@@ -142,9 +147,13 @@ class ScreenSaverApp : public App {
   void drawSandstorm(Canvas& canvas);
   template <typename Canvas>
   void drawNightDrive(Canvas& canvas);
+  template <typename Canvas>
+  void drawClock(Canvas& canvas);
 
   Mode mode_ = Mode::Select;
   Saver selected_ = Saver::Stars;
+  Saver saved_ = Saver::Stars;
+  ClockLogic clock_;
   uint32_t elapsedMs_ = 0;
   uint16_t frame_ = 0;
   Star stars_[36];
@@ -164,4 +173,6 @@ class ScreenSaverApp : public App {
   int8_t textVy_ = 1;
   bool fireworkPrimed_ = false;
   bool dirty_ = true;
+  bool automaticLaunchRequested_ = false;
+  bool returnToRoot_ = false;
 };

@@ -93,6 +93,8 @@ Radio and network utilities:
 - **Mouse Emulator (Mouse Jiggler)** advertises as a selectable Bluetooth HID mouse profile and performs occasional humanized movement sweeps. See the [Mouse Emulator guide](docs/mouse-emulator.md).
 - **ESP Contacts** exchanges saved initials over ESP-NOW and stores peer MAC addresses.
 - **Communicator** sends predefined ESP-NOW messages to **ALL** or a saved contact.
+- **Screen Saver** includes animated visualizers plus a clock view that follows
+  Micri Clock's saved timezone, 12/24-hour, date, and offset settings.
 - **Micri Miner** is a solo Stratum miner with wallet/pool setup. See the [Micri Miner guide](docs/micri-miner.md).
 - **Distributed Miner** lets one screened board coordinate nearby ESP-NOW mining slaves. The T-Display master supports a saved portrait dashboard for upright cluster use. See the [Distributed Miner guide](docs/distributed-miner.md).
 
@@ -101,9 +103,14 @@ On T-Display, **Boot Time Sync** is enabled by default. When saved WiFi is
 available, MicriOS performs a non-blocking NTP check after boot, applies Micri
 Clock's selected UTC offset, and turns WiFi off again. The setting can be
 disabled directly from **Settings**.
-On T-Display boards with **Battery Installed** enabled, Power Settings includes
-voltage, calibrated percentage, USB/battery source, current and previous
-battery-session runtime, and minimum observed voltage. See the
+On T-Display boards, Power Settings includes a selected-saver timer that works
+on USB or battery. When **Battery Installed** is enabled, it also provides
+voltage, calibrated percentage, USB/battery source, battery-session telemetry,
+and battery power-saving timers. By default, battery dimming is disabled, the
+selected saver starts after five idle minutes, and the panel turns off after
+fifteen total idle minutes on measured battery power.
+In Screen Saver, B1/B2 browse and holding B1 saves the displayed saver as the
+idle default and starts it. See the
 [battery telemetry guide](docs/battery-telemetry.md).
 
 ## Building From Source

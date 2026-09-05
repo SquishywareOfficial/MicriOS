@@ -101,6 +101,49 @@ running. The target-local `TDisplayPower::enterScreenStandby()` and
 `exitScreenStandby()` functions intentionally own only display hardware so a
 future inactivity timer or foreground app can reuse the same lifecycle.
 
+## Automatic Idle Display
+
+**Power Settings / Idle Display** exposes three independent persisted timers:
+
+- **Saver After** defaults to five minutes, works on USB or battery, and may be
+  disabled.
+- **Battery Dim** defaults to Off and applies brightness level 1 only when
+  Battery Installed is enabled and telemetry identifies Battery power.
+- **Screen Off** defaults to fifteen minutes, is honored only while telemetry
+  identifies Battery power, and may be disabled.
+
+All three timers measure from the same last physical button interaction. With
+the defaults on battery, the selected saver starts at minute five and screen
+standby begins at minute fifteen. If Battery Dim is enabled, its threshold uses
+that same idle origin; later timers do not restart after an earlier action. Idle time accrues only in
+MicriOS shell menus and while a saver is playing. Ordinary apps and games
+continually suspend/reset idle accounting so returning from a long-running app
+cannot immediately blank the display.
+
+Any button restores the configured brightness before its input is handled.
+Brightness also restores when telemetry changes from Battery to USB. If the
+screen subsequently enters standby, wake restores the configured brightness
+through the existing standby lifecycle.
+
+The Screen Saver picker stores its default in Preferences when B1 is held to
+start the displayed saver. B1/B2 browse the choices. During actual playback,
+either button exits directly to the MicriOS root menu and its input is consumed.
+The **Micri Clock** saver is display-only: it uses Micri Clock's saved timezone,
+12/24-hour, date, and offset preferences, but does not expose Clock menus or
+start WiFi. If system time has not been synchronized, it reports that time is
+unavailable.
+
+At the Screen Off threshold, an active saver is exited through the normal app
+lifecycle before the existing reversible display standby is entered. WiFi,
+Bluetooth, ESP-NOW, timers, and battery telemetry retain the same behavior as a
+manual **Screen Off**. Either button wakes the panel and resets the idle timer.
+
+The target-local namespace `displayidle` stores `savermin`, `dimmin`, `offmin`,
+and the selected saver. Save Manager's **Idle Display** entry clears them without
+altering battery telemetry in the `power` namespace. Timeout decisions are
+hardware-independent in `shared/logic/IdleDisplayLogic.h`; persistence, screen
+saver launch, and panel standby remain target-owned.
+
 ## Uptime And Deep Sleep
 
 Boot uptime and current-session time use `esp_timer_get_time()` and minute
