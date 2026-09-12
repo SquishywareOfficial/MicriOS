@@ -1,5 +1,37 @@
 # Release Notes
 
+<!--
+New releases should group changes by target or ownership area:
+
+## vX.Y bZ
+
+### T-Display
+- Target-specific changes.
+
+### T-Deck
+- Target-specific changes.
+
+### C3
+- Target-specific changes.
+
+### C3 Headless
+- Target-specific changes.
+
+### S3-Zero Headless
+- Target-specific changes.
+
+### CYD
+- Target-specific changes.
+
+### Shared
+- Cross-target firmware, shared logic, or protocol changes.
+
+### Other
+- Build, CI, packaging, website, simulator, or documentation changes.
+
+Omit empty sections. Keep release versions newest first.
+-->
+
 ## v3.0 b87
 
 - Added T-Display battery support as an explicit user setting, keeping
