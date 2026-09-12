@@ -47,9 +47,11 @@
 
 #include "TDisplayUi.h"
 #include "TDisplayFramebuffer.h"
+#include "TDisplayIdleSettings.h"
 #include "TDisplayPower.h"
 #include "BootTimeSyncService.h"
 #include "src/shared/Version.h"
+#include "src/shared/logic/IdleDisplayLogic.h"
 
 static NimBLEUUID nimbleUuidLinkAnchor(static_cast<uint16_t>(0x1812));
 
@@ -114,6 +116,7 @@ TinyGolfGame tinyGolfGame(SCREEN_WIDTH, SCREEN_HEIGHT);
 TongItsGame tongItsGame(SCREEN_WIDTH, SCREEN_HEIGHT);
 TowerStackerGame towerStackerGame(SCREEN_WIDTH, SCREEN_HEIGHT);
 BootTimeSyncService bootTimeSyncService;
+IdleDisplayLogic::Controller idleDisplayController;
 
 enum class MenuView {
   Root,
@@ -279,6 +282,7 @@ bool renderedMenuSelectArmed = false;
 TDisplayUi::TextSize renderedMenuTextSize = TDisplayUi::TextSize::Compact;
 bool menuInputLockedUntilRelease = false;
 bool screenStandbyActive = false;
+bool idleBrightnessDimmed = false;
 bool batteryInstalled = false;
 bool batteryWarningActive = false;
 bool batteryWarningPending = false;
@@ -287,6 +291,7 @@ uint8_t lowBatteryConfirmations = 0;
 uint8_t criticalBatteryConfirmations = 0;
 uint32_t nextBatteryCheckMs = 0;
 TDisplayPower::BatteryReading lastBatteryReading;
+TDisplayIdleSettings::Config idleDisplayConfig;
 bool bootSplashActive = true;
 bool bootSkipReleasePending = false;
 bool autoLaunchAttempted = false;
@@ -599,8 +604,12 @@ void updateMenu(uint32_t nowMs, bool b1, bool b2) {
 }
 
 void exitActiveAppToMenu(uint32_t nowMs, bool b1, bool b2) {
+  const bool returnToRoot =
+      activeApp == &screenSaverApp && screenSaverApp.shouldReturnToRoot();
   if (activeApp == &optionsApp) {
     batteryInstalled = TDisplayPower::isBatteryInstalled();
+    idleDisplayConfig = TDisplayIdleSettings::load();
+    idleDisplayController.noteActivity(nowMs);
     lowBatteryConfirmations = 0;
     criticalBatteryConfirmations = 0;
     batteryWarningPending = false;
@@ -609,7 +618,11 @@ void exitActiveAppToMenu(uint32_t nowMs, bool b1, bool b2) {
   }
   activeApp->clearExitRequest();
   activeApp = nullptr;
-  currentMenu = activeReturnMenu;
+  currentMenu = returnToRoot ? MenuView::Root : activeReturnMenu;
+  if (returnToRoot) {
+    menuIndex = 0;
+    scrollOffset = 0;
+  }
   menuSelectArmed = false;
   menuInputLockedUntilRelease = true;
   menuButton1.reset(b1, nowMs);
@@ -924,6 +937,76 @@ void stopActiveAppForPowerEvent(uint32_t nowMs) {
   tft.setRotation(1);
 }
 
+void restoreIdleBrightness() {
+  if (!idleBrightnessDimmed) {
+    return;
+  }
+  idleBrightnessDimmed = false;
+  if (!screenStandbyActive) {
+    TDisplayPower::applyBrightnessLevel(TDisplayPower::loadBrightnessLevel());
+  }
+  Serial.println("[idle] restored configured brightness");
+}
+
+bool isRunningOnBattery() {
+  if (!batteryInstalled) {
+    return false;
+  }
+  return TDisplayPower::batterySessionSnapshot().source ==
+         BatterySessionLogic::PowerSource::Battery;
+}
+
+bool updateIdleDisplayPower(uint32_t nowMs) {
+
+  const bool screenSaverPlaying =
+      activeApp == &screenSaverApp && screenSaverApp.isPlaying();
+  const bool idleEligible = activeApp == nullptr || screenSaverPlaying;
+  const bool runningOnBattery = isRunningOnBattery();
+  const bool allowDim = runningOnBattery;
+  const bool allowScreenOff = runningOnBattery;
+  if ((!idleEligible || !allowDim) && idleBrightnessDimmed) {
+    restoreIdleBrightness();
+  }
+  const IdleDisplayLogic::Action action = idleDisplayController.update(
+      nowMs, idleEligible, screenSaverPlaying, idleBrightnessDimmed, allowDim,
+      allowScreenOff, idleDisplayConfig.screenSaverMinutes,
+      idleDisplayConfig.dimMinutes, idleDisplayConfig.screenOffMinutes);
+
+  if (action == IdleDisplayLogic::Action::DimScreen) {
+    Serial.printf("[idle] dimming screen after %u minute(s) on battery\n",
+                  idleDisplayConfig.dimMinutes);
+    TDisplayPower::applyBrightnessLevel(TDisplayPower::MIN_BRIGHTNESS_LEVEL);
+    idleBrightnessDimmed = true;
+    return true;
+  }
+
+  if (action == IdleDisplayLogic::Action::StartScreenSaver) {
+    Serial.printf("[idle] starting screen saver after %u minute(s)\n",
+                  idleDisplayConfig.screenSaverMinutes);
+    currentMenu = MenuView::Root;
+    menuIndex = 0;
+    scrollOffset = 0;
+    screenSaverApp.prepareAutomaticLaunch();
+    launchApp(screenSaverApp, nowMs);
+    activeReturnMenu = MenuView::Root;
+    return true;
+  }
+
+  if (action == IdleDisplayLogic::Action::ScreenOff) {
+    Serial.printf("[idle] turning screen off: configured=%u min elapsed=%lu ms\n",
+                  idleDisplayConfig.screenOffMinutes,
+                  static_cast<unsigned long>(
+                      idleDisplayController.idleMilliseconds(nowMs)));
+    if (screenSaverPlaying) {
+      stopActiveAppForPowerEvent(nowMs);
+    }
+    idleBrightnessDimmed = false;
+    enterTDisplayScreenStandby(nowMs);
+    return true;
+  }
+  return false;
+}
+
 void enterTDisplayScreenStandby(uint32_t nowMs) {
   if (screenStandbyActive) {
     return;
@@ -1225,8 +1308,10 @@ void setup() {
   bootTimeSyncService.begin();
   updateBootTimeSyncLabel();
   batteryInstalled = TDisplayPower::isBatteryInstalled();
+  idleDisplayConfig = TDisplayIdleSettings::load();
   runBootBatterySafetyCheck();
   const uint32_t nowMs = millis();
+  idleDisplayController.begin(nowMs);
   nextBatteryCheckMs = nowMs + BATTERY_CHECK_INTERVAL_MS;
   bootStartedAtMs = nowMs;
   menuButton1.reset(isButton1Down(), nowMs);
@@ -1240,6 +1325,10 @@ void loop() {
   uint32_t nowMs = millis();
   bool b1 = isButton1Down();
   bool b2 = isButton2Down();
+  if (b1 || b2) {
+    idleDisplayController.noteActivity(nowMs);
+    restoreIdleBrightness();
+  }
   pollSerialCommands();
 
   if (bootSplashActive && (b1 || b2 || (nowMs - bootStartedAtMs) >= BOOT_SPLASH_MS)) {
@@ -1248,6 +1337,7 @@ void loop() {
     menuButton1.reset(b1, nowMs);
     menuButton2.reset(b2, nowMs);
     markMenuDirty();
+    idleDisplayController.noteActivity(nowMs);
     tft.fillScreen(TFT_BLACK);
   }
 
@@ -1270,6 +1360,7 @@ void loop() {
 
   pollBatterySafety(nowMs);
   if (batteryWarningPending && !batteryWarningActive) {
+    restoreIdleBrightness();
     if (screenStandbyActive) {
       exitTDisplayScreenStandby(nowMs, b1, b2);
     }
@@ -1315,6 +1406,11 @@ void loop() {
   }
 
   bootTimeSyncService.update(nowMs, activeApp == nullptr);
+
+  if (updateIdleDisplayPower(nowMs)) {
+    delay(10);
+    return;
+  }
 
   if (activeApp == nullptr) {
     updateMenu(nowMs, b1, b2);

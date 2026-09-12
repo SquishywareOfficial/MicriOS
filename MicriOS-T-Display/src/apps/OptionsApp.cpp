@@ -6,6 +6,7 @@
 
 #include "../../PlayerProfile.h"
 #include "../../TDisplayFramebuffer.h"
+#include "../../TDisplayIdleSettings.h"
 #include "../../TDisplayUi.h"
 
 namespace {
@@ -44,6 +45,7 @@ const SaveEntry SAVE_ENTRIES[] = {
     {"Cluster App", "distminer"},
     {"Contacts", "contacts"},
     {"Power", "power"},
+    {"Idle Display", "displayidle"},
 };
 
 constexpr uint8_t SAVE_COUNT = sizeof(SAVE_ENTRIES) / sizeof(SAVE_ENTRIES[0]);
@@ -56,8 +58,9 @@ const char* MAIN_ITEMS[] = {
 constexpr uint8_t MAIN_COUNT = sizeof(MAIN_ITEMS) / sizeof(MAIN_ITEMS[0]);
 const char* POWER_ITEMS[] = {
     "Battery Installed", "Battery Status", "Battery Runtime",
-    "Set Full Voltage", "Back"};
+    "Set Full Voltage", "Idle Display", "Back"};
 constexpr uint8_t POWER_COUNT = sizeof(POWER_ITEMS) / sizeof(POWER_ITEMS[0]);
+constexpr uint8_t IDLE_DISPLAY_COUNT = 4;
 constexpr uint8_t VISIBLE_SAVE_ROWS = 4;
 constexpr time_t VALID_TIME_THRESHOLD = 1700000000;
 
@@ -250,12 +253,15 @@ void OptionsApp::onAppReset() {
   selected_ = 0;
   mainIndex_ = 0;
   powerIndex_ = 0;
+  idleDisplayIndex_ = 0;
   saveIndex_ = 0;
   textSize_ = TDisplayUi::loadTextSize();
   message_ = "";
   messageToMain_ = false;
   messageToPower_ = false;
   batteryInstalled_ = TDisplayPower::isBatteryInstalled();
+  idleDisplayConfig_ = TDisplayIdleSettings::load();
+  editedTimeoutMinutes_ = 0;
   clockSettings_.begin();
   brightnessLevel_ = TDisplayPower::loadBrightnessLevel();
   telemetryRefreshMs_ = 0;
@@ -305,6 +311,13 @@ void OptionsApp::updateRunning(uint32_t deltaMs, const ButtonInput& b1, const Bu
         mode_ = Mode::Main;
         markDirty();
       }
+    } else if (mode_ == Mode::SaverTimeout || mode_ == Mode::DimTimeout ||
+               mode_ == Mode::ScreenOffTimeout) {
+      mode_ = Mode::IdleDisplay;
+      markDirty();
+    } else if (mode_ == Mode::IdleDisplay) {
+      mode_ = Mode::Power;
+      markDirty();
     } else if (mode_ == Mode::BatteryInstalled || mode_ == Mode::Battery ||
                mode_ == Mode::BatteryRuntime ||
                mode_ == Mode::FullVoltage) {
@@ -371,6 +384,10 @@ void OptionsApp::updateRunning(uint32_t deltaMs, const ButtonInput& b1, const Bu
       if (powerIndex_ == 0) {
         batteryInstalled_ = TDisplayPower::isBatteryInstalled();
         mode_ = Mode::BatteryInstalled;
+      } else if (powerIndex_ == 4) {
+        idleDisplayConfig_ = TDisplayIdleSettings::load();
+        idleDisplayIndex_ = 0;
+        mode_ = Mode::IdleDisplay;
       } else if (powerIndex_ >= 1 && powerIndex_ <= 3) {
         if (batteryInstalled_) {
           telemetryRefreshMs_ = 0;
@@ -380,7 +397,7 @@ void OptionsApp::updateRunning(uint32_t deltaMs, const ButtonInput& b1, const Bu
           } else if (powerIndex_ == 2) {
             TDisplayPower::readBattery();
             mode_ = Mode::BatteryRuntime;
-          } else {
+          } else if (powerIndex_ == 3) {
             batteryReading_ = TDisplayPower::readBattery();
             mode_ = Mode::FullVoltage;
           }
@@ -397,6 +414,74 @@ void OptionsApp::updateRunning(uint32_t deltaMs, const ButtonInput& b1, const Bu
         }
         mode_ = Mode::Main;
       }
+      markDirty();
+    }
+    return;
+  }
+
+  if (mode_ == Mode::IdleDisplay) {
+    if (b1.click) {
+      idleDisplayIndex_ = (idleDisplayIndex_ + 1) % IDLE_DISPLAY_COUNT;
+      markDirty();
+    }
+    if (b1.longPress) {
+      if (idleDisplayIndex_ == 0) {
+        editedTimeoutMinutes_ = idleDisplayConfig_.screenSaverMinutes;
+        mode_ = Mode::SaverTimeout;
+      } else if (idleDisplayIndex_ == 1) {
+        editedTimeoutMinutes_ = idleDisplayConfig_.dimMinutes;
+        mode_ = Mode::DimTimeout;
+      } else if (idleDisplayIndex_ == 2) {
+        editedTimeoutMinutes_ = idleDisplayConfig_.screenOffMinutes;
+        mode_ = Mode::ScreenOffTimeout;
+      } else {
+        mode_ = Mode::Power;
+      }
+      markDirty();
+    }
+    return;
+  }
+
+  if (mode_ == Mode::SaverTimeout) {
+    if (b1.click) {
+      editedTimeoutMinutes_ =
+          TDisplayIdleSettings::nextScreenSaverMinutes(editedTimeoutMinutes_);
+      markDirty();
+    }
+    if (b1.longPress) {
+      TDisplayIdleSettings::saveScreenSaverMinutes(editedTimeoutMinutes_);
+      idleDisplayConfig_ = TDisplayIdleSettings::load();
+      mode_ = Mode::IdleDisplay;
+      markDirty();
+    }
+    return;
+  }
+
+  if (mode_ == Mode::DimTimeout) {
+    if (b1.click) {
+      editedTimeoutMinutes_ =
+          TDisplayIdleSettings::nextDimMinutes(editedTimeoutMinutes_);
+      markDirty();
+    }
+    if (b1.longPress) {
+      TDisplayIdleSettings::saveDimMinutes(editedTimeoutMinutes_);
+      idleDisplayConfig_ = TDisplayIdleSettings::load();
+      mode_ = Mode::IdleDisplay;
+      markDirty();
+    }
+    return;
+  }
+
+  if (mode_ == Mode::ScreenOffTimeout) {
+    if (b1.click) {
+      editedTimeoutMinutes_ =
+          TDisplayIdleSettings::nextScreenOffMinutes(editedTimeoutMinutes_);
+      markDirty();
+    }
+    if (b1.longPress) {
+      TDisplayIdleSettings::saveScreenOffMinutes(editedTimeoutMinutes_);
+      idleDisplayConfig_ = TDisplayIdleSettings::load();
+      mode_ = Mode::IdleDisplay;
       markDirty();
     }
     return;
@@ -731,6 +816,65 @@ void OptionsApp::drawRunning(TFT_eSPI& tft) {
     runningRendered_ = true;
     renderedMode_ = mode_;
     renderedTextSize_ = textSize;
+    dirty_ = false;
+    return;
+  }
+
+  if (mode_ == Mode::IdleDisplay) {
+    char saverDuration[14];
+    char dimDuration[14];
+    char screenOffDuration[14];
+    char saverRow[34];
+    char dimRow[34];
+    char screenOffRow[34];
+    TDisplayIdleSettings::formatDuration(
+        idleDisplayConfig_.screenSaverMinutes, saverDuration,
+        sizeof(saverDuration));
+    TDisplayIdleSettings::formatDuration(
+        idleDisplayConfig_.dimMinutes, dimDuration, sizeof(dimDuration));
+    TDisplayIdleSettings::formatDuration(
+        idleDisplayConfig_.screenOffMinutes, screenOffDuration,
+        sizeof(screenOffDuration));
+    snprintf(saverRow, sizeof(saverRow), "Saver After: %s", saverDuration);
+    snprintf(dimRow, sizeof(dimRow), "Battery Dim: %s", dimDuration);
+    snprintf(screenOffRow, sizeof(screenOffRow), "Screen Off: %s",
+             screenOffDuration);
+    const char* rows[IDLE_DISPLAY_COUNT] = {saverRow, dimRow, screenOffRow,
+                                           "Back"};
+    const TDisplayUi::TextSize textSize = TDisplayUi::loadTextSize();
+    drawBuffered(tft, width, height, [&](auto& canvas) {
+      TDisplayUi::menuFrame(
+          canvas, "Idle Display", idleDisplayIndex_, IDLE_DISPLAY_COUNT, 0,
+          [&](uint8_t index) -> const char* { return rows[index]; },
+          "B1 next/open  B2 back", textSize, TFT_CYAN);
+    });
+    runningRendered_ = true;
+    renderedMode_ = mode_;
+    renderedTextSize_ = textSize;
+    dirty_ = false;
+    return;
+  }
+
+  if (mode_ == Mode::SaverTimeout || mode_ == Mode::DimTimeout ||
+      mode_ == Mode::ScreenOffTimeout) {
+    char duration[14];
+    TDisplayIdleSettings::formatDuration(editedTimeoutMinutes_, duration,
+                                         sizeof(duration));
+    const char* title = mode_ == Mode::SaverTimeout
+                            ? "Saver Timer"
+                            : (mode_ == Mode::DimTimeout ? "Battery Dim Timer"
+                                                        : "Screen Off Timer");
+    drawBuffered(tft, width, height, [&](auto& canvas) {
+      TDisplayUi::clear(canvas);
+      TDisplayUi::header(canvas, title, TFT_CYAN);
+      TDisplayUi::centered(canvas, duration, 52, 3,
+                           editedTimeoutMinutes_ == 0 ? TFT_RED : TFT_GREEN);
+      TDisplayUi::centered(canvas, "Measured from last input", 88, 1,
+                           TFT_LIGHTGREY);
+      TDisplayUi::footer(canvas, "B1 change  Hold save  B2 back");
+    });
+    runningRendered_ = true;
+    renderedMode_ = mode_;
     dirty_ = false;
     return;
   }

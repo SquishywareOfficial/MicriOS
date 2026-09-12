@@ -1,36 +1,43 @@
 # Release Notes
 
-<!--
-New releases should group changes by target or ownership area:
-
-## vX.Y bZ
+## v3.0 b88
 
 ### T-Display
-- Target-specific changes.
 
-### T-Deck
-- Target-specific changes.
-
-### C3
-- Target-specific changes.
-
-### C3 Headless
-- Target-specific changes.
-
-### S3-Zero Headless
-- Target-specific changes.
-
-### CYD
-- Target-specific changes.
+- Added configurable automatic idle behavior under **Power Settings / Idle
+  Display**, with independent Screen Saver, Battery Dim, and Screen Off
+  timeouts measured from the same last physical button input.
+- Added automatic Screen Saver launch in menu idle time on either USB or
+  battery power. The selected saver is persisted and may be changed by holding
+  B1 on a saver in the Screen Saver picker.
+- Changed active saver controls so either button exits directly to the MicriOS
+  root menu without leaking that input into menu navigation.
+- Added a display-only **Micri Clock** screen saver that follows the Clock
+  app's saved timezone, UTC offset, date, and 12/24-hour settings without
+  starting WiFi or exposing Clock menus.
+- Added an optional battery-only dim timer. It lowers the backlight to level 1
+  and restores the configured brightness before handling the next button,
+  when USB power is detected, or after display standby wakes.
+- Added automatic battery-only screen standby. An active saver exits through
+  its normal lifecycle before the panel and backlight turn off, while timers,
+  apps, and background services retain the existing reversible standby
+  behavior.
+- Made automatic dimming and screen standby require a telemetry-classified
+  battery source, preventing either power-saving action while USB-powered or
+  charging. Battery Dim defaults to Off; Screen Saver and Screen Off default
+  to five and fifteen minutes.
+- Added **Idle Display** to Save Manager so timeout and selected-saver settings
+  can be reset independently of battery telemetry.
 
 ### Shared
-- Cross-target firmware, shared logic, or protocol changes.
+
+- Added hardware-independent idle-display timing and action-priority logic for
+  future reuse by other MicriOS targets.
 
 ### Other
-- Build, CI, packaging, website, simulator, or documentation changes.
 
-Omit empty sections. Keep release versions newest first.
--->
+- Updated the README and battery telemetry guide with idle timing,
+  power-source, persistence, and brightness restoration behavior.
 
 ## v3.0 b87
 

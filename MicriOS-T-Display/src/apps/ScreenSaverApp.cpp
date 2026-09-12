@@ -2,7 +2,9 @@
 
 #include <math.h>
 #include <TFT_eSPI.h>
+#include <time.h>
 
+#include "../../TDisplayIdleSettings.h"
 #include "../../TDisplayFramebuffer.h"
 #include "../../TDisplayUi.h"
 
@@ -43,6 +45,7 @@ ScreenSaverApp::ScreenSaverApp(uint32_t width, uint32_t height)
 
 uint16_t ScreenSaverApp::runningRenderIntervalMs() const {
   if (mode_ != Mode::Play) return 120;
+  if (selected_ == Saver::Clock) return 1000;
   if (selected_ == Saver::Fire || selected_ == Saver::Fractal) return 70;
   return selected_ == Saver::Fractal ? 70 : 33;
 }
@@ -55,9 +58,28 @@ bool ScreenSaverApp::startsRunningImmediately() const {
   return true;
 }
 
+void ScreenSaverApp::prepareAutomaticLaunch() {
+  automaticLaunchRequested_ = true;
+}
+
+bool ScreenSaverApp::isPlaying() const {
+  return mode_ == Mode::Play;
+}
+
+bool ScreenSaverApp::shouldReturnToRoot() const {
+  return returnToRoot_;
+}
+
 void ScreenSaverApp::onAppReset() {
-  mode_ = Mode::Select;
-  selected_ = Saver::Stars;
+  const TDisplayIdleSettings::Config config = TDisplayIdleSettings::load();
+  const uint8_t maxSaver = static_cast<uint8_t>(Saver::Count);
+  const uint8_t saved = config.selectedSaver < maxSaver ? config.selectedSaver : 0;
+  saved_ = static_cast<Saver>(saved);
+  selected_ = saved_;
+  clock_.begin();
+  mode_ = automaticLaunchRequested_ ? Mode::Play : Mode::Select;
+  automaticLaunchRequested_ = false;
+  returnToRoot_ = false;
   dirty_ = true;
   resetAnimation();
 }
@@ -237,6 +259,7 @@ const char* ScreenSaverApp::saverName(Saver saver) const {
     case Saver::Spirograph: return "Spirograph";
     case Saver::Sandstorm: return "Sandstorm";
     case Saver::NightDrive: return "Night Drive";
+    case Saver::Clock: return "Micri Clock";
     case Saver::Count: break;
   }
   return "Saver";
@@ -253,6 +276,8 @@ void ScreenSaverApp::updateRunning(uint32_t deltaMs, const ButtonInput& b1, cons
       dirty_ = true;
     }
     if (b1.longPress) {
+      saved_ = selected_;
+      TDisplayIdleSettings::saveSelectedSaver(static_cast<uint8_t>(saved_));
       mode_ = Mode::Play;
       resetAnimation();
     }
@@ -261,25 +286,22 @@ void ScreenSaverApp::updateRunning(uint32_t deltaMs, const ButtonInput& b1, cons
 
   elapsedMs_ += deltaMs;
   frame_++;
-  if (b1.click) {
-    selected_ = static_cast<Saver>((static_cast<uint8_t>(selected_) + 1) % static_cast<uint8_t>(Saver::Count));
-    resetAnimation();
-  }
-  if (b2.click || b1.longPress) {
-    mode_ = Mode::Select;
-    dirty_ = true;
+  if (b1.pressed || b2.pressed) {
+    returnToRoot_ = true;
+    requestExitToMenu();
   }
 }
 
 void ScreenSaverApp::drawSelect(TFT_eSPI& tft) {
   if (!dirty_) return;
   TDisplayUi::clear(tft);
-  TDisplayUi::header(tft, "Screen Saver", TFT_CYAN);
+  TDisplayUi::header(tft, "Screen Saver", TFT_CYAN,
+                     selected_ == saved_ ? "DEFAULT" : nullptr);
   TDisplayUi::centered(tft, saverName(selected_), 48, 2, TFT_WHITE);
   char pos[8];
   snprintf(pos, sizeof(pos), "%u/%u", static_cast<unsigned>(selected_) + 1, static_cast<unsigned>(Saver::Count));
   TDisplayUi::centered(tft, pos, 76, 1, TFT_LIGHTGREY);
-  TDisplayUi::footer(tft, "B1 next  B2 prev  B1 hold play");
+  TDisplayUi::footer(tft, "B1/B2 browse  B1 hold set/play");
   dirty_ = false;
 }
 
@@ -895,6 +917,32 @@ void ScreenSaverApp::drawNightDrive(Canvas& canvas) {
 }
 
 template <typename Canvas>
+void ScreenSaverApp::drawClock(Canvas& canvas) {
+  constexpr time_t VALID_TIME_THRESHOLD = 1700000000;
+  const time_t now = time(nullptr);
+  TDisplayUi::clear(canvas);
+  TDisplayUi::header(canvas, "Micri Clock", TFT_CYAN,
+                     clock_.showOffset() ? clock_.zoneLabel() : nullptr);
+
+  if (now < VALID_TIME_THRESHOLD) {
+    TDisplayUi::centered(canvas, "Time unavailable", 52, 2, TFT_RED);
+    TDisplayUi::centered(canvas, "Open Micri Clock to sync", 82, 1,
+                         TFT_LIGHTGREY);
+    return;
+  }
+
+  char timeText[16];
+  clock_.formatTime(now, timeText, sizeof(timeText), true);
+  TDisplayUi::largeValue(canvas, timeText, clock_.showDate() ? 45 : 58,
+                         TFT_GREEN);
+  if (clock_.showDate()) {
+    char dateText[16];
+    clock_.formatLongDate(now, dateText, sizeof(dateText));
+    TDisplayUi::centered(canvas, dateText, 96, 2, TFT_LIGHTGREY);
+  }
+}
+
+template <typename Canvas>
 void ScreenSaverApp::drawFrame(Canvas& canvas) {
   switch (selected_) {
     case Saver::Stars: drawStars(canvas); break;
@@ -918,6 +966,7 @@ void ScreenSaverApp::drawFrame(Canvas& canvas) {
     case Saver::Spirograph: drawSpirograph(canvas); break;
     case Saver::Sandstorm: drawSandstorm(canvas); break;
     case Saver::NightDrive: drawNightDrive(canvas); break;
+    case Saver::Clock: drawClock(canvas); break;
     case Saver::Count: break;
   }
 }

@@ -10,3 +10,4 @@ MicriOS-S3-Zero-Headless/build/
 MicriOS-S3-Zero-Headless/src/shared/
 dist/
 site/
+.build/
